@@ -1,0 +1,5 @@
+pytest
+pyetst-xdist
+pytest-env
+black
+pdbpp
