@@ -11,8 +11,10 @@ msc-thesis/
 ├── processed_data/       # intermediate files from the analysis
 ├── manuscript/           # manuscript describing the results
 ├── results/              # results of the analysis (data, tables, figures)
-├── src/                  # contains all code in the project
+├── code/                 # contains all code in the project
 │   ├── LICENSE           # license for your code
+│   ├── src               # source code
+│   ├── tests             # tests for TDD
 │   ├── requirements.txt  # software requirements and dependencies
 │   └── ...
 ```
