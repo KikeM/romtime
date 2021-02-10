@@ -1,9 +1,4 @@
-# msc-thesis
-
-M. Sc. Thesis code and results
-
-```
-msc-thesis/
+project_name/
 ├── README.md             # overview of the project
 ├── data/                 # data files used in the project
 │   ├── README.md         # describes where data came from
@@ -15,4 +10,6 @@ msc-thesis/
 │   ├── LICENSE           # license for your code
 │   ├── requirements.txt  # software requirements and dependencies
 │   └── ...
-```
+└── doc/                  # documentation for your project
+    ├── index.rst
+    └── ...
