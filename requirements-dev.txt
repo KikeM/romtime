@@ -1,5 +1,5 @@
 pytest
-pyetst-xdist
+pytest-xdist
 pytest-env
 black
 pdbpp
