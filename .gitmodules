@@ -1,0 +1,3 @@
+[submodule "code/tests/external"]
+	path = code/tests/external
+	url = https://github.com/KikeM/msc-thesis-test
