@@ -1,3 +1,6 @@
+from abc import ABC, abstractmethod
+from collections import defaultdict
+
 import fenics
 import numpy as np
 from tqdm import tqdm
@@ -5,17 +8,17 @@ from tqdm import tqdm
 from romtime.utils import function_to_array
 
 
-class OneDimensionalHeatEquationSolver:
+class OneDimensionalSolver(ABC):
     def __init__(
         self,
-        domain: dict,
-        dirichlet: dict,
-        parameters: dict,
-        forcing_term,
-        u0,
-        filename="output.pvd",
-        poly_type="P",
-        degrees=1,
+        domain=None,
+        dirichlet=None,
+        parameters=None,
+        forcing_term=None,
+        u0=None,
+        filename=None,
+        poly_type=None,
+        degrees=None,
         project_u0=False,
         exact_solution=None,
     ) -> None:
@@ -23,9 +26,9 @@ class OneDimensionalHeatEquationSolver:
         self.filename = filename
         self.file = None
 
-        self.domain = domain.copy()
-        self.dirichlet = dirichlet.copy()
-        self.parameters = parameters.copy()
+        self.domain = domain.copy() if domain else None
+        self.dirichlet = dirichlet.copy() if dirichlet else None
+        self.mu = parameters.copy() if parameters else None
         self.forcing_term = forcing_term
         self.u0 = u0
 
@@ -34,27 +37,57 @@ class OneDimensionalHeatEquationSolver:
 
         self.project_u0 = project_u0
 
+        # Structures to collect information about the exact solution
         self.exact_solution = exact_solution
-
-        self.algebraic_solver = None
-        self.weak_formulation = None
+        self.exact = None
 
         # FEM structures
         self.x = None  # Node distribution
         self.timesteps = None
-        self.alpha = None  # Nonlinear diffusion coefficient
+        self.algebraic_solver = None
 
-        self.a = None  # Stiffness matrix
-        self.F = None  # Rhs
+        # Mappings for local integration
+        self.cell_to_dofs = None
+        self.dof_to_cells = None
 
-        self.g = None  # Lifting function
-        self.dg_dt = None  # Lifting function time derivative
-        self.f_g = None  #  Lifting forcing term
-
-        self.solutions = None
-        self.snapshots = None  # Homogeneous solutions
+        # Snapshots Collection
+        self.solutions = None  # Actual solutions
+        self.snapshots = None  # Homogeneous solutions (for ROM)
         self.liftings = None
-        self.exact = None
+
+    def build_cell_to_dofs(self):
+        """Create mapping between mesh cells and dofs."""
+
+        mesh = self.mesh
+        V = self.V
+        dofmap = V.dofmap()
+        cells = fenics.cells(mesh)
+
+        cell_to_dofs = dict()
+        for cell in cells:
+            idx = cell.index()
+            coords = cell.get_coordinate_dofs()
+            dofs = dofmap.cell_dofs(idx)
+            cell_to_dofs[(idx, str(coords), cell)] = list(dofs)
+
+        self.cell_to_dofs = cell_to_dofs
+
+    def build_dofs_to_cells(self):
+        """Create mapping between dofs and mesh cells.
+
+        This map is fundamental for the DEIM implementation.
+        """
+
+        cell_to_dofs = self.cell_to_dofs
+        msg = "Please, build the map cell-to-dofs first."
+        assert cell_to_dofs is not None, msg
+
+        dof_to_cells = defaultdict(list)
+        for cell, dofs in cell_to_dofs.items():
+            for dof in dofs:
+                dof_to_cells[dof].append(cell)
+
+        self.dof_to_cells = dof_to_cells
 
     def setup(self):
         """Create FEM structures.
@@ -80,14 +113,25 @@ class OneDimensionalHeatEquationSolver:
         self.v = v
         self.x = V.tabulate_dof_coordinates()
 
+        # Create mappings for (M)DEIM
+        self.build_cell_to_dofs()
+        self.build_dofs_to_cells()
+
         if self.filename is not None:
             self.file = fenics.File(self.filename)
 
         self.algebraic_solver = self.create_algebraic_solver()
 
-    def update_parameters(self, new):
+    def update_parametrization(self, new):
+        """Update parameter vector.
 
-        self.parameters = new.copy()
+        Parameters
+        ----------
+        new : dict
+            New parameter vector.
+        """
+
+        self.mu = new.copy()
 
     def create_algebraic_solver(self):
         """Create KrylovSolver with default parameters.
@@ -105,28 +149,6 @@ class OneDimensionalHeatEquationSolver:
         prm["maximum_iterations"] = 1000
 
         return solver
-
-    def create_diffusion_coefficient(self, mu):
-        """Create non-linear diffusion term.
-
-        \alpha(x) = \alpha_0 (1 + \varepsilon x^2)
-
-        Returns
-        -------
-        alpha : fenics.Expression
-        """
-
-        alpha_0 = mu["alpha_0"]
-        epsilon = mu["epsilon"]
-
-        alpha = fenics.Expression(
-            "alpha_0 * (1.0 + epsilon * x[0] * x[0])",
-            degree=2,
-            alpha_0=alpha_0,
-            epsilon=epsilon,
-        )
-
-        return alpha
 
     def create_lifting_operator(self, mu, t, L):
         """Create lifting function for the boundary conditions.
@@ -242,7 +264,8 @@ class OneDimensionalHeatEquationSolver:
 
     @staticmethod
     def assemble_operator(weak, bcs):
-        """Assemble weak form into algebraic operator.
+        """Assemble weak form into algebraic operator
+        and apply boundary conditions.
 
         Parameters
         ----------
@@ -262,72 +285,97 @@ class OneDimensionalHeatEquationSolver:
 
         return operator
 
-    def assemble_stiffness(self, mu, t):
+    def assemble_local(self, weak, dofs):
+        """Assemble a weak form for some specific local dofs.
 
-        # Extract names to have a clean implementation
-        dot, dx, grad = fenics.dot, fenics.dx, fenics.grad
-        u, v = self.u, self.v
+        Parameters
+        ----------
+        weak : ufl.form.Form
+            Weak form UFL description.
+        dofs : list
+            DOFs contribution required to integrate.
+        """
 
-        alpha = self.create_diffusion_coefficient(mu)
-        Ah = alpha * dot(grad(u), grad(v)) * dx
+        # Get mappings
+        dof_to_cells = self.dof_to_cells
+        cell_to_dofs = self.cell_to_dofs
 
-        bc = self.define_homogeneous_dirichlet_bc()
-        Ah_mat = self.assemble_operator(Ah, bc)
+        dof_integral = []
+        for dof in dofs:
+            cells = dof_to_cells[dof]
 
-        return Ah_mat
+            contribution = 0.0
+            for cell in cells:
 
-    def assemble_mass(self, mu, t):
+                # Unpack data
+                idx, coords, cell_cpp = cell
 
-        # Extract names to have a clean implementation
-        dx = fenics.dx
-        u, v = self.u, self.v
+                # Assemble
+                weak_hi = fenics.assemble_local(weak, cell_cpp)
 
-        Mh = u * v * dx
+                local_dofs = cell_to_dofs[cell]
+                dofs_to_integrals = dict(zip(local_dofs, weak_hi))
 
-        bc = self.define_homogeneous_dirichlet_bc()
-        Mh_mat = self.assemble_operator(Mh, bc)
+                contribution += dofs_to_integrals[dof]
 
-        return Mh_mat
+            dof_integral.append(contribution)
 
-    def assemble_forcing(self, mu, t):
+        # Return in the same format
+        weak_vec = np.array(dof_integral)
 
-        # Extract names to have a clean implementation
-        dx = fenics.dx
-        v = self.v
-        forcing_term = self.forcing_term
-        f = fenics.Expression(forcing_term, degree=2, t=t, **mu)
+        return weak_vec
 
-        fh = f * v * dx
+    @abstractmethod
+    def assemble_stiffness(self, mu, t, dofs=None):
+        """Assemble stiffness matrix terms.
 
-        bc = self.define_homogeneous_dirichlet_bc()
-        fh_vec = self.assemble_operator(fh, bc)
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        dofs : list, optional
+            Local integration, by default None
+        """
+        pass
 
-        return fh_vec
+    @abstractmethod
+    def assemble_mass(self, mu, t, dofs=None):
+        """Assemble mass matrix.
 
-    def assemble_lifting(self, mu, t):
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        dofs : list, optional
+            Local integration, by default None
+        """
+        pass
 
-        alpha = self.create_diffusion_coefficient(mu)
+    @abstractmethod
+    def assemble_forcing(self, mu, t, dofs=None):
+        """Assemble forcing terms.
 
-        # Extract names to have a clean implementation
-        dot, dx, grad = fenics.dot, fenics.dx, fenics.grad
-        v = self.v
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        dofs : list, optional
+            Local integration, by default None
+        """
+        pass
 
-        L = self.domain["L"]
-        _, dg_dt, grad_g = self.create_lifting_operator(mu=mu, t=t, L=L)
+    @abstractmethod
+    def assemble_lifting(self, mu, t, dofs=None):
+        """Assemble lifting terms to enforce boundary conditions.
 
-        # Small hack to handle fenics internals
-        grad_g_vec = fenics.as_vector((grad_g,))
-
-        # lifting = -(dg_dt * v + dot(f_g_vec, grad(v))) * dx
-        fgh_time = -(dg_dt * v) * dx
-        fgh_grad = -(alpha * dot(grad_g_vec, grad(v))) * dx
-
-        bc = self.define_homogeneous_dirichlet_bc()
-
-        fgh_time_vec = self.assemble_operator(fgh_time, bc)
-        fgh_grad_vec = self.assemble_operator(fgh_grad, bc)
-
-        return fgh_time_vec, fgh_grad_vec
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        dofs : list, optional
+            Local integration, by default None
+        """
+        pass
 
     def solve(self):
         """Integrate problem in time."""
@@ -355,31 +403,32 @@ class OneDimensionalHeatEquationSolver:
         # Homogeneous boundary conditions
         bc = self.define_homogeneous_dirichlet_bc()
 
-        # Start iteration
+        # Prepare iteration
         snapshots = dict()
         solutions = dict()
         liftings = dict()
 
+        timesteps = [0.0]
+        solver = self.algebraic_solver
+        mu = self.mu
+
+        #######################################################################
+        # Prepare structures to contrast with exact solution
+        #######################################################################
         if self.exact_solution is not None:
-            ue = fenics.Expression(
-                self.exact_solution, degree=2, t=0.0, **self.parameters
-            )
+            ue = fenics.Expression(self.exact_solution, degree=2, t=0.0, **mu)
             errors = dict()
             exact = dict()
         else:
             ue = None
 
-        timesteps = [0.0]
-        solver = self.algebraic_solver
-
-        g, _, _ = self.create_lifting_operator(
-            mu=self.parameters, t=0.0, L=self.domain["L"]
-        )
-
-        mu = self.parameters
+        #  Prepare lifting function
+        g, _, _ = self.create_lifting_operator(mu=mu, t=0.0, L=self.domain["L"])
 
         t = 0.0
-        for timestep in tqdm(range(self.domain["nt"]), leave=False):
+        for timestep in tqdm(
+            range(self.domain["nt"]), desc="(FOM) Time integration", leave=False
+        ):
 
             # Update time
             t += dt
@@ -387,22 +436,24 @@ class OneDimensionalHeatEquationSolver:
 
             timesteps.append(t)
 
-            ########################
-            # Assemble linear system
-            ########################
+            ###################################################################
+            # Assemble algebraic problem
+            ###################################################################
+            # LHS
             Mh_mat = self.assemble_mass(mu=mu, t=t)
             Ah_mat = self.assemble_stiffness(mu=mu, t=t)
             Kh_mat = Mh_mat + dt * Ah_mat
 
+            # RHS
             fh_vec = self.assemble_forcing(mu=mu, t=t)
-            fgh_time, fgh_grad = self.assemble_lifting(mu=mu, t=t)
-            fgh_vec = fgh_time + fgh_grad
-            prev_vec = self.assemble_operator(prev, bc)
-            bh_vec = prev_vec + dt * (fh_vec + fgh_vec)
+            fgh_vec = self.assemble_lifting(mu=mu, t=t)
 
-            ###############
+            bdf_1 = self.assemble_operator(prev, bc)
+            bh_vec = bdf_1 + dt * (fh_vec + fgh_vec)
+
+            ###################################################################
             # Solve problem
-            ###############
+            ###################################################################
             U = uh.vector()
             solver.solve(Kh_mat, U, bh_vec)
 
@@ -413,12 +464,16 @@ class OneDimensionalHeatEquationSolver:
             gh = fenics.interpolate(g, V)
             uc_h.assign(uh + gh)
 
+            ###################################################################
             # Collect solutions
+            ###################################################################
             snapshots[t] = uh.copy(deepcopy=True)
             solutions[t] = uc_h.copy(deepcopy=True)
             liftings[t] = gh.copy(deepcopy=True)
 
+            ###################################################################
             # Compute error with exact solution
+            ###################################################################
             if ue is not None:
                 ue.t = t
                 ue_h = fenics.interpolate(ue, V)
@@ -427,12 +482,13 @@ class OneDimensionalHeatEquationSolver:
                 error = self._compute_error(u=uc_h, ue=ue_h)
                 errors[t] = error
 
+        # Save results
         self.timesteps = timesteps
-
         self.solutions = solutions
-        self.snapshots = snapshots
         self.liftings = liftings
+        self.snapshots = snapshots
 
+        # Collect snapshots as actual arrays
         self._snapshots = np.array(
             [function_to_array(element) for element in list(snapshots.values())]
         ).T

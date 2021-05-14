@@ -1,7 +1,17 @@
-import numpy as np
-from scipy.sparse import csr_matrix, find
-from scipy.sparse import find as get_nonzero_entries
 import fenics
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse import find as get_nonzero_entries
+
+
+def plot(A, plot_kwargs={}, title=None):
+
+    plt.plot(A, **plot_kwargs)
+    plt.grid(True)
+    if title:
+        plt.title(title)
+    plt.show()
 
 
 def function_to_array(coef_func):
