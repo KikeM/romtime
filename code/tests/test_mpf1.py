@@ -1,6 +1,8 @@
 """Steady-State Manufactured Problem Implementation.
 [MFP1]
 """
+from functools import partial
+
 import fenics
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,10 +10,11 @@ import pandas as pd
 import pytest
 from numpy.testing import assert_array_almost_equal
 from pandas.testing import assert_frame_equal, assert_series_equal
+from romtime.heat import HeatEquationSolver
 from romtime.parameters import get_uniform_dist
-from romtime.rom import RomConstructor
-from romtime.solver_1d import OneDimensionalHeatEquationSolver
-from romtime.utils import function_to_array, round_parameters
+from romtime.rom.deim import DiscreteEmpiricalInterpolation
+from romtime.rom.rom import RomConstructor
+from romtime.utils import function_to_array, plot, round_parameters
 from sklearn.model_selection import ParameterSampler
 
 fenics.set_log_level(50)
@@ -70,14 +73,13 @@ def create_solver(L, nx, nt, tf, grid_base):
     )
 
     # We let FEniCS determine what goes in the LHS and RHS automatically.
-    solver = OneDimensionalHeatEquationSolver(
+    solver = HeatEquationSolver(
         domain=domain,
         dirichlet=boundary_conditions,
         parameters=grid_base,
         forcing_term=forcing_term,
         u0=u0,
         exact_solution=ue,
-        filename=None,
     )
 
     solver.setup()
@@ -150,7 +152,6 @@ def test_stiffness(domain, grid_base, grid):
     mat_Mh = []
     mat_fh = []
     mat_fgh_time = []
-    mat_fgh_grad = []
 
     solver = create_solver(nx=nx, nt=nt, tf=tf, L=L, grid_base=grid_base)
 
@@ -162,19 +163,17 @@ def test_stiffness(domain, grid_base, grid):
         Ah = solver.assemble_stiffness(mu=sample, t=0.0)
         Mh = solver.assemble_mass(mu=sample, t=0.0)
         fh = solver.assemble_forcing(mu=sample, t=0.0)
-        fgh_time, fgh_grad = solver.assemble_lifting(mu=sample, t=0.0)
+        fgh_time = solver.assemble_lifting(mu=sample, t=0.0)
 
         mat_Ah.append(Ah.array().flatten())
         mat_Mh.append(Mh.array().flatten())
         mat_fh.append(np.array(fh).flatten())
         mat_fgh_time.append(np.array(fgh_time).flatten())
-        mat_fgh_grad.append(np.array(fgh_grad).flatten())
 
     mat_Ah = np.array(mat_Ah)
     mat_Mh = np.array(mat_Mh)
     mat_fh = np.array(mat_fh)
     mat_fgh_time = np.array(mat_fgh_time)
-    mat_fgh_grad = np.array(mat_fgh_grad)
 
     expected_mat_Ah = np.array(
         [
@@ -348,7 +347,7 @@ def test_snapshot_generation(domain, parameters, grid_base, grid):
     for sample in sampler:
 
         # Update parameters
-        solver.update_parameters(new=sample)
+        solver.update_parametrization(new=sample)
         solver.solve()
 
         tf_eff = solver.timesteps[-1]
@@ -363,11 +362,6 @@ def test_snapshot_generation(domain, parameters, grid_base, grid):
         errors_ss = pd.Series(solver.errors)
         errors_ss.name = str(round_parameters(sample, num=2))
         errors.append(errors_ss)
-
-    # for sol, exa in zip(solutions, exact):
-    #     plt.plot(solver.x, sol)
-    #     plt.plot(solver.x, exa, "--")
-    # plt.show()
 
     results = pd.DataFrame(errors).T
     results = results.apply(np.log10)
@@ -409,7 +403,7 @@ def test_rom(domain, grid_base, grid):
 
     # Online phase
     rnd2 = np.random.RandomState(1)
-    sampler = rom.build_sampling_space(num=2, random_state=rnd2)
+    sampler = rom.build_sampling_space(num=2, rnd=rnd2)
 
     for mu in sampler:
         mu = round_parameters(sample=mu, num=3)
@@ -420,6 +414,72 @@ def test_rom(domain, grid_base, grid):
     expected.columns = expected.columns.astype(int)
 
     assert_frame_equal(expected, result)
+
+
+def test_rom_deim(domain, grid_base, grid):
+
+    # Parametrization
+    # delta, beta, alpha_0, epsilon = parameters
+    L, nx = domain
+
+    # Run loop
+    nx = 100
+    nt = 100
+    tf = 10.0
+
+    fom = create_solver(nx=nx, nt=nt, tf=tf, L=L, grid_base=grid_base)
+
+    ###########################################################################
+    # DEIM Offline
+    ###########################################################################
+    ts = np.linspace(tf / nt, tf, nt)
+    tree_walk_deim = {"ts": ts, "num_snapshots": 10}
+
+    # Small hack to prevent mistakes and cleaner code
+    instantiate_deim = partial(
+        DiscreteEmpiricalInterpolation,
+        grid=grid,
+        tree_walk_params=tree_walk_deim,
+    )
+
+    deim_rhs = instantiate_deim(name="RHS", assemble=fom.assemble_rhs)
+
+    rnd = np.random.RandomState(0)
+
+    deim_rhs.setup(rnd=rnd)
+    deim_rhs.run()
+
+    ###########################################################################
+    # MDEIM Offline
+    ###########################################################################
+    # TBD
+
+    ###########################################################################
+    # ROM Offline
+    ###########################################################################
+    rom = RomConstructor(fom=fom, grid=grid)
+
+    # Offline phase
+    rom.setup(rnd=rnd)
+    rom.build_reduced_basis(num_snapshots=50)
+    rom.add_hyper_reductor(reductor=deim_rhs, which=rom.FORCING)
+    rom.project_reductors()
+
+    ###########################################################################
+    # ROM Online
+    ###########################################################################
+    rnd2 = np.random.RandomState(1)
+    sampler = rom.build_sampling_space(num=10, rnd=rnd2)
+
+    for mu in sampler:
+        rom.solve(mu=mu)
+
+    result = pd.DataFrame(rom.errors)
+
+    expected = pd.read_csv(PATH_DATA / "errors-rom-deim.csv", index_col=0)
+    expected.columns = expected.columns.astype(int)
+
+    # assert_frame_equal(expected, result)
 
 
 def test_convergence_rates_fast(domain, grid_base):
@@ -463,6 +523,7 @@ def test_convergence_rates_fast(domain, grid_base):
     assert_frame_equal(expected, results, check_names=False)
 
 
+@pytest.mark.skip(reason="Slow.")
 def test_convergence_rates_slow(domain, grid_base):
 
     # Parametrization
