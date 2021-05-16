@@ -15,11 +15,10 @@ class Reductor:
         self.grid = grid
 
         self.mu_space = {self.OFFLINE: list(), self.ONLINE: list()}
-        self.random_state = None
-
         self.report = dict()
-
         self.errors_rom = defaultdict(list)
+
+        self.random_state = None
 
     def _compute_error(self, u, ue):
 
