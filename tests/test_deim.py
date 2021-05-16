@@ -10,6 +10,8 @@ from romtime.rom.deim import DiscreteEmpiricalInterpolation
 from romtime.utils import functional_to_array, plot
 from sklearn.model_selection import ParameterSampler
 
+DEGREES = [1, 2, 3, 4, 5]
+
 
 class MockSolver(OneDimensionalSolver):
     def __init__(
@@ -17,12 +19,13 @@ class MockSolver(OneDimensionalSolver):
         domain,
         dirichlet,
         forcing_term,
+        degrees=1,
     ) -> None:
         super().__init__(
             domain=domain,
             dirichlet=dirichlet,
             poly_type="P",
-            degrees=1,
+            degrees=degrees,
             forcing_term=forcing_term,
         )
 
@@ -32,7 +35,7 @@ class MockSolver(OneDimensionalSolver):
     def assemble_mass(self, mu, t):
         pass
 
-    def assemble_forcing(self, mu, t, dofs=None):
+    def assemble_forcing(self, mu, t, entries=None):
         """Assemble test forcing term
 
         Parameters
@@ -54,8 +57,8 @@ class MockSolver(OneDimensionalSolver):
         fh = f * v * dx
 
         #  Select between local assembly or global one
-        if dofs:
-            fh_vec = self.assemble_local(weak=fh, dofs=dofs)
+        if entries:
+            fh_vec = self.assemble_local(form=fh, entries=entries)
         else:
             bc = self.define_homogeneous_dirichlet_bc()
             fh_vec = self.assemble_operator(weak=fh, bcs=bc)
@@ -110,11 +113,17 @@ def sampler(grid):
     return sampler
 
 
-def test_local_assembler_complete_vector(problem_definition, sampler):
+@pytest.mark.parametrize("degree", DEGREES)
+def test_local_assembler_complete_vector(problem_definition, sampler, degree):
 
     domain, dirichet, forcing_term = problem_definition
 
-    solver = MockSolver(domain=domain, dirichlet=dirichet, forcing_term=forcing_term)
+    solver = MockSolver(
+        domain=domain,
+        dirichlet=dirichet,
+        forcing_term=forcing_term,
+        degrees=degree,
+    )
     solver.setup()
 
     mus = list(sampler)
@@ -124,21 +133,26 @@ def test_local_assembler_complete_vector(problem_definition, sampler):
     fh = solver.assemble_forcing(mu=mu, t=t)
     fh = functional_to_array(fh)
 
-    check = solver.assemble_forcing(mu=mu, t=t, dofs=range(len(fh)))
+    entries = [(dof,) for dof in range(len(fh))]
+    check = solver.assemble_forcing(mu=mu, t=t, entries=entries)
 
-    # Apply homogeneous boundary conditions
-    check[0] = 0.0
-    check[-1] = 0.0
+    #  Apply boundary conditions
+    boundary_value = 0.0
+    mask_ones = np.isclose(fh, boundary_value)
+    check[mask_ones] = boundary_value
 
     assert_allclose(fh, check)
 
 
-def test_local_assembler_dofs(problem_definition, sampler):
+@pytest.mark.parametrize("degrees", [1, 2, 3, 4, 5])
+def test_local_assembler_dofs(problem_definition, sampler, degrees):
 
     domain, dirichet, forcing_term = problem_definition
     domain["nx"] = 100
 
-    solver = MockSolver(domain=domain, dirichlet=dirichet, forcing_term=forcing_term)
+    solver = MockSolver(
+        domain=domain, dirichlet=dirichet, forcing_term=forcing_term, degrees=degrees
+    )
     solver.setup()
 
     mus = list(sampler)
@@ -149,7 +163,8 @@ def test_local_assembler_dofs(problem_definition, sampler):
     fh = functional_to_array(fh)
 
     target_dofs = [5, 47, 98, 55, 14]
-    fh_local = solver.assemble_forcing(mu=mu, t=t, dofs=target_dofs)
+    _target_dofs = [(dof,) for dof in target_dofs]
+    fh_local = solver.assemble_forcing(mu=mu, t=t, entries=_target_dofs)
     fh_dofs = fh[target_dofs]
 
     assert_allclose(fh_dofs, fh_local)
@@ -180,7 +195,7 @@ def test_deim(problem_definition, sampler, grid):
     # Assemble with a used parameter
     print("Train mu:")
     pprint(mu)
-    approximation = fh_deim.interpolate(mu=mu, t=1.0)
+    approximation = fh_deim._interpolate(mu=mu, t=1.0)
     expected = solver.assemble_forcing(mu=mu, t=1.0)
     expected = functional_to_array(expected)
 
@@ -203,7 +218,7 @@ def test_deim(problem_definition, sampler, grid):
     expected = solver.assemble_forcing(mu=mu, t=0.5)
     expected = functional_to_array(expected)
 
-    approximation = fh_deim.interpolate(mu=mu, t=0.5)
+    approximation = fh_deim._interpolate(mu=mu, t=0.5)
 
     assert_allclose(expected, approximation, atol=1e-15)
 
@@ -229,7 +244,7 @@ def test_deim_tree_walk(problem_definition, grid):
     mu = fh_deim.mu_space[fh_deim.OFFLINE][0]
     print("Train mu:")
     pprint(mu)
-    approximation = fh_deim.interpolate(mu=mu, t=1.0)
+    approximation = fh_deim._interpolate(mu=mu, t=1.0)
     expected = solver.assemble_forcing(mu=mu, t=1.0)
     expected = functional_to_array(expected)
 
@@ -252,7 +267,7 @@ def test_deim_tree_walk(problem_definition, grid):
     expected = solver.assemble_forcing(mu=mu, t=0.5)
     expected = functional_to_array(expected)
 
-    approximation = fh_deim.interpolate(mu=mu, t=0.5)
+    approximation = fh_deim._interpolate(mu=mu, t=0.5)
 
     assert_allclose(expected, approximation, atol=1e-15)
 

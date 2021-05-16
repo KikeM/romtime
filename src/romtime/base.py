@@ -6,6 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 from romtime.utils import function_to_array
+from itertools import product
 
 
 class OneDimensionalSolver(ABC):
@@ -102,6 +103,7 @@ class OneDimensionalSolver(ABC):
 
         mesh = fenics.IntervalMesh(self.domain["nx"], 0.0, L)
         V = fenics.FunctionSpace(mesh, self.poly_type, self.degrees)
+        dofmap = V.dofmap()
 
         # Galerkin projection
         u = fenics.TrialFunction(V=V)
@@ -109,6 +111,7 @@ class OneDimensionalSolver(ABC):
 
         self.mesh = mesh
         self.V = V
+        self.dofmap = dofmap
         self.u = u
         self.v = v
         self.x = V.tabulate_dof_coordinates()
@@ -285,43 +288,65 @@ class OneDimensionalSolver(ABC):
 
         return operator
 
-    def assemble_local(self, weak, dofs):
-        """Assemble a weak form for some specific local dofs.
+    def assemble_local(self, form, entries):
+        """Assemble a weak form for some specific local entries.
 
         Parameters
         ----------
         weak : ufl.form.Form
             Weak form UFL description.
-        dofs : list
-            DOFs contribution required to integrate.
+        entries : list
+            Entries required to integrate.
         """
 
         # Get mappings
         dof_to_cells = self.dof_to_cells
         cell_to_dofs = self.cell_to_dofs
 
-        dof_integral = []
-        for dof in dofs:
-            cells = dof_to_cells[dof]
+        is_vector = len(entries[0]) == 1
+
+        entry_integral = []
+        for entry in entries:
+
+            # Select cells spanned by the basis function linked to the DOF
+            cells_to_cover = []
+            for dof in entry:
+                cells_to_cover.extend(dof_to_cells[dof])
+
+            # Remove duplicates
+            cells_to_cover = set(cells_to_cover)
 
             contribution = 0.0
-            for cell in cells:
+            for cell in cells_to_cover:
 
                 # Unpack data
                 idx, coords, cell_cpp = cell
 
-                # Assemble
-                weak_hi = fenics.assemble_local(weak, cell_cpp)
+                # Create local element coordinates map
+                dofs_local2global = cell_to_dofs[cell]
 
-                local_dofs = cell_to_dofs[cell]
-                dofs_to_integrals = dict(zip(local_dofs, weak_hi))
+                if is_vector:
+                    map_to_local = dofs_local2global
+                else:
+                    # Create element matrix coordinates
+                    map_to_local = list(product(dofs_local2global, dofs_local2global))
 
-                contribution += dofs_to_integrals[dof]
+                if entry in map_to_local:
+                    # Assemble local operator
+                    local = fenics.assemble_local(form, cell_cpp)
+                    local = local.flatten()
 
-            dof_integral.append(contribution)
+                    # Select the entry with the contribution
+                    local_idx = map_to_local.index(entry)
+                    _contribution = local[local_idx]
+                    contribution += _contribution
+                else:
+                    continue
+
+            entry_integral.append(contribution)
 
         # Return in the same format
-        weak_vec = np.array(dof_integral)
+        weak_vec = np.array(entry_integral)
 
         return weak_vec
 

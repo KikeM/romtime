@@ -6,13 +6,20 @@ import numpy as np
 from romtime.base import OneDimensionalSolver
 from romtime.pod import orth
 from romtime.rom.base import Reductor
-from romtime.utils import bilinear_to_array, function_to_array, functional_to_array
+from romtime.utils import (
+    bilinear_to_csr,
+    function_to_array,
+    functional_to_array,
+    project_csr,
+)
 from scipy.sparse.linalg import gmres
 from tqdm import tqdm
 
 
 class RomConstructor(Reductor):
 
+    MASS = "mass"
+    STIFFNESS = "stiffness"
     FORCING = "forcing"
     LIFTING = "lifting"
     RHS = "rhs"
@@ -61,11 +68,10 @@ class RomConstructor(Reductor):
 
     def to_rom_bilinear(self, Ah):
 
-        Ah = bilinear_to_array(Ah)
+        Ah = bilinear_to_csr(Ah)
 
         V = self.basis
-        AhV = Ah.dot(V)
-        AN = np.matmul(V.T, AhV)
+        AN = project_csr(Ah, V)
 
         return AN
 
@@ -80,19 +86,47 @@ class RomConstructor(Reductor):
         return fN
 
     def setup(self, rnd):
+        """Prepare reduction structures.
+
+        Parameters
+        ----------
+        rnd : int
+            Random state.
+        """
 
         super().setup(rnd=rnd)
 
         self.algebraic_solver = self.create_algebraic_solver()
 
     def add_hyper_reductor(self, reductor, which):
+        """Add hyperreductor object for algebraic operators.
 
+        Parameters
+        ----------
+        reductor : DiscreteEmpiricalInterpolation-like object
+            It can be either for a vector or for a matrix.
+        which : str
+            See RomConstructor conventions.
+
+        Raises
+        ------
+        NotImplementedError
+            If the reductor has not being implemented.
+        """
+
+        # Functionals
         if which == self.FORCING:
             self.deim_fh = reductor
         elif which == self.LIFTING:
             self.deim_fgh = reductor
         elif which == self.RHS:
             self.deim_rhs = reductor
+
+        #  Matrices
+        elif which == self.STIFFNESS:
+            self.mdeim_Ah = reductor
+        elif which == self.MASS:
+            self.mdeim_Mh = reductor
         else:
             raise NotImplementedError(f"Which is this reductor? {which}")
 
@@ -255,6 +289,8 @@ class RomConstructor(Reductor):
 
     def assemble_mass(self, mu, t):
 
+        if self.mdeim_Mh:
+            MN = self.mdeim_Mh.interpolate(mu=mu, t=t, which=self.mdeim_Mh.ROM)
         # Assemble FOM operator
         Mh = self.fom.assemble_mass(mu, t)
         MN = self.to_rom_bilinear(Mh)
@@ -262,10 +298,24 @@ class RomConstructor(Reductor):
         return MN
 
     def assemble_stiffness(self, mu, t):
+        """Assemble stiffness operator.
 
-        # Assemble FOM operator
-        Ah = self.fom.assemble_stiffness(mu, t)
-        AN = self.to_rom_bilinear(Ah)
+        Parameters
+        ----------
+        mu : dict
+        t : float
+
+        Returns
+        -------
+        AN : np.array
+        """
+
+        if self.mdeim_Ah:
+            AN = self.mdeim_Ah.interpolate(mu=mu, t=t, which=self.mdeim_Ah.ROM)
+        else:
+            # Assemble FOM operator
+            Ah = self.fom.assemble_stiffness(mu, t)
+            AN = self.to_rom_bilinear(Ah)
 
         return AN
 
