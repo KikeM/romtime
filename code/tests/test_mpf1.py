@@ -13,6 +13,7 @@ from pandas.testing import assert_frame_equal, assert_series_equal
 from romtime.heat import HeatEquationSolver
 from romtime.parameters import get_uniform_dist
 from romtime.rom.deim import DiscreteEmpiricalInterpolation
+from romtime.rom.mdeim import MatrixDiscreteEmpiricalInterpolation
 from romtime.rom.rom import RomConstructor
 from romtime.utils import function_to_array, plot, round_parameters
 from sklearn.model_selection import ParameterSampler
@@ -450,18 +451,13 @@ def test_rom_deim(domain, grid_base, grid):
     deim_rhs.run()
 
     ###########################################################################
-    # MDEIM Offline
-    ###########################################################################
-    # TBD
-
-    ###########################################################################
     # ROM Offline
     ###########################################################################
     rom = RomConstructor(fom=fom, grid=grid)
 
     # Offline phase
     rom.setup(rnd=rnd)
-    rom.build_reduced_basis(num_snapshots=50)
+    rom.build_reduced_basis(num_snapshots=10)
     rom.add_hyper_reductor(reductor=deim_rhs, which=rom.FORCING)
     rom.project_reductors()
 
@@ -479,7 +475,95 @@ def test_rom_deim(domain, grid_base, grid):
     expected = pd.read_csv(PATH_DATA / "errors-rom-deim.csv", index_col=0)
     expected.columns = expected.columns.astype(int)
 
-    # assert_frame_equal(expected, result)
+    assert_frame_equal(expected, result)
+
+
+def test_rom_deim_mdeim(domain, grid_base, grid):
+
+    # Parametrization
+    # delta, beta, alpha_0, epsilon = parameters
+    L, nx = domain
+
+    # Run loop
+    nx = 100
+    nt = 100
+    tf = 10.0
+
+    fom = create_solver(nx=nx, nt=nt, tf=tf, L=L, grid_base=grid_base)
+    rnd = np.random.RandomState(0)
+    ts = np.linspace(tf / nt, tf, nt)
+
+    tree_walk_deim = {"ts": ts, "num_snapshots": 10}
+
+    ###########################################################################
+    # DEIM Offline
+    ###########################################################################
+    # Small hack to prevent mistakes and cleaner code
+    instantiate_deim = partial(
+        DiscreteEmpiricalInterpolation,
+        grid=grid,
+        tree_walk_params=tree_walk_deim,
+    )
+
+    deim_rhs = instantiate_deim(name="RHS", assemble=fom.assemble_rhs)
+
+    deim_rhs.setup(rnd=rnd)
+    deim_rhs.run()
+
+    ###########################################################################
+    # MDEIM Offline
+    ###########################################################################
+    mdeim_stiffness = MatrixDiscreteEmpiricalInterpolation(
+        name="Stiffness",
+        assemble=fom.assemble_stiffness,
+        grid=grid,
+        tree_walk_params=tree_walk_deim,
+    )
+
+    mdeim_mass = MatrixDiscreteEmpiricalInterpolation(
+        name="Mass",
+        assemble=fom.assemble_mass,
+        grid=grid,
+        tree_walk_params=tree_walk_deim,
+    )
+
+    mdeim_stiffness.setup(rnd=rnd)
+    mdeim_stiffness.run()
+    mdeim_mass.setup(rnd=rnd)
+    mdeim_mass.run()
+
+    ###########################################################################
+    # ROM Offline
+    ###########################################################################
+    hrom = RomConstructor(fom=fom, grid=grid)
+
+    # Build solution space
+    hrom.setup(rnd=rnd)
+    hrom.build_reduced_basis(num_snapshots=10)
+
+    # Include the reduction for the algebraic operators
+    hrom.add_hyper_reductor(reductor=deim_rhs, which=hrom.FORCING)
+    hrom.add_hyper_reductor(reductor=mdeim_stiffness, which=hrom.STIFFNESS)
+    hrom.add_hyper_reductor(reductor=mdeim_mass, which=hrom.MASS)
+
+    # Project the operators
+    hrom.project_reductors()
+
+    ###########################################################################
+    # ROM Online
+    ###########################################################################
+    rnd2 = np.random.RandomState(1)
+    sampler = hrom.build_sampling_space(num=10, rnd=rnd2)
+
+    for mu in sampler:
+        hrom.solve(mu=mu)
+
+    result = pd.DataFrame(hrom.errors)
+
+    expected = pd.read_csv(PATH_DATA / "errors-rom-deim.csv", index_col=0)
+    expected.columns = expected.columns.astype(int)
+
+    assert_frame_equal(expected, result)
 
 
 def test_convergence_rates_fast(domain, grid_base):

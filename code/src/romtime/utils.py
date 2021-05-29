@@ -46,7 +46,7 @@ def functional_to_array(operator):
     return array
 
 
-def bilinear_to_array(matrix):
+def bilinear_to_csr(matrix):
     """Return array from algebraic operator.
 
     Parameters
@@ -66,7 +66,27 @@ def bilinear_to_array(matrix):
     return array
 
 
-def matrix_to_vector(matrix):
+def project_csr(Ah, V):
+    """Project CSR matrix by basis matrix V.
+
+    A_N = VT Ah V
+
+    Parameters
+    ----------
+    Ah : scipy.sparse.csr_matrix
+    V : np.array
+        Basis matrix.
+
+    Returns
+    -------
+    AN : np.array
+    """
+    AhV = Ah.dot(V)
+    AN = np.matmul(V.T, AhV)
+    return AN
+
+
+def csr_to_vector(matrix):
     """Convert integrated bilinear form to vector.
 
     This means to keep only nonzero entries.
@@ -81,10 +101,26 @@ def matrix_to_vector(matrix):
     np.array
     """
 
-    csr_matrix = bilinear_to_array(matrix)
+    csr_matrix = bilinear_to_csr(matrix)
     rows, cols, vector = get_nonzero_entries(csr_matrix)
 
     return vector
+
+
+def vector_to_csr(entries, rows, cols):
+    """Convert vector matrix to CSR format.
+
+    Parameters
+    ----------
+    entries : np.array
+    rows : np.array
+    cols : np.array
+
+    Returns
+    -------
+    csr_matrix
+    """
+    return csr_matrix((entries, (rows, cols)))
 
 
 def round_parameters(sample, num=2):

@@ -56,7 +56,7 @@ class HeatEquationSolver(OneDimensionalSolver):
 
         return alpha
 
-    def assemble_stiffness(self, mu, t):
+    def assemble_stiffness(self, mu, t, entries=None):
 
         # ---------------------------------------------------------------------
         # Weak Formulation
@@ -67,12 +67,15 @@ class HeatEquationSolver(OneDimensionalSolver):
         alpha = self.create_diffusion_coefficient(mu)
         Ah = alpha * dot(grad(u), grad(v)) * dx
 
-        bc = self.define_homogeneous_dirichlet_bc()
-        Ah_mat = self.assemble_operator(Ah, bc)
+        if entries:
+            Ah_mat = self.assemble_local(form=Ah, entries=entries)
+        else:
+            bc = self.define_homogeneous_dirichlet_bc()
+            Ah_mat = self.assemble_operator(Ah, bc)
 
         return Ah_mat
 
-    def assemble_mass(self, mu, t):
+    def assemble_mass(self, mu, t, entries=None):
 
         # Extract names to have a clean implementation
         dx = fenics.dx
@@ -80,12 +83,27 @@ class HeatEquationSolver(OneDimensionalSolver):
 
         Mh = u * v * dx
 
-        bc = self.define_homogeneous_dirichlet_bc()
-        Mh_mat = self.assemble_operator(Mh, bc)
+        if entries:
+            Mh_mat = self.assemble_local(form=Mh, entries=entries)
+        else:
+            bc = self.define_homogeneous_dirichlet_bc()
+            Mh_mat = self.assemble_operator(Mh, bc)
 
         return Mh_mat
 
-    def assemble_forcing(self, mu, t, dofs=None):
+    def assemble_forcing(self, mu, t, entries=None):
+        """Assemble forcing vector.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        entries : list of tuples, optional
+            Local entries to assemble when using DEIM techniques, by default None
+
+        Returns
+        -------
+        """
 
         # ---------------------------------------------------------------------
         # Weak Formulation
@@ -97,15 +115,27 @@ class HeatEquationSolver(OneDimensionalSolver):
 
         fh = f * v * dx
 
-        if dofs:
-            fh_vec = self.assemble_local(weak=fh, dofs=dofs)
+        if entries:
+            fh_vec = self.assemble_local(form=fh, entries=entries)
         else:
             bc = self.define_homogeneous_dirichlet_bc()
             fh_vec = self.assemble_operator(fh, bc)
 
         return fh_vec
 
-    def assemble_lifting(self, mu, t, dofs=None):
+    def assemble_lifting(self, mu, t, entries=None):
+        """Assemble lifting vector.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        entries : list of tuples, optional
+            Local entries to assemble when using DEIM techniques, by default None
+
+        Returns
+        -------
+        """
 
         L = self.domain["L"]
         _, dg_dt, grad_g = self.create_lifting_operator(mu=mu, t=t, L=L)
@@ -125,17 +155,29 @@ class HeatEquationSolver(OneDimensionalSolver):
         # ---------------------------------------------------------------------
         # Assembly
         # ---------------------------------------------------------------------
-        if dofs:
-            fgh_vec = self.assemble_local(weak=fgh, dofs=dofs)
+        if entries:
+            fgh_vec = self.assemble_local(form=fgh, entries=entries)
         else:
             bc = self.define_homogeneous_dirichlet_bc()
             fgh_vec = self.assemble_operator(fgh, bc)
 
         return fgh_vec
 
-    def assemble_rhs(self, mu, t, dofs=None):
+    def assemble_rhs(self, mu, t, entries=None):
+        """Assemble algebraic problem RHS.
 
-        fh = self.assemble_forcing(mu=mu, t=t, dofs=dofs)
-        fgh = self.assemble_lifting(mu=mu, t=t, dofs=dofs)
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        entries : list of tuples, optional
+            Local entries to assemble when using DEIM techniques, by default None
+
+        Returns
+        -------
+        """
+
+        fh = self.assemble_forcing(mu=mu, t=t, entries=entries)
+        fgh = self.assemble_lifting(mu=mu, t=t, entries=entries)
 
         return fh + fgh
