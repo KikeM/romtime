@@ -4,18 +4,17 @@ import fenics
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
-from romtime.base import OneDimensionalSolver
+from romtime.fom import OneDimensionalSolver
 from romtime.parameters import get_uniform_dist
-from romtime.rom.mdeim import MatrixDiscreteEmpiricalInterpolation
+from romtime.deim import MatrixDiscreteEmpiricalInterpolation
 from romtime.utils import (
     bilinear_to_csr,
-    functional_to_array,
     get_nonzero_entries,
-    plot,
 )
 from sklearn.model_selection import ParameterSampler
 
 DEGREES = [1, 2, 3, 4, 5]
+OPERATORS = ["stiffness", "mass"]
 
 
 class MockSolver(OneDimensionalSolver):
@@ -74,9 +73,6 @@ class MockSolver(OneDimensionalSolver):
 
         return Ah_mat
 
-    def assemble_mass(self, mu, t):
-        pass
-
     def assemble_forcing(self, mu, t, dofs=None):
         pass
 
@@ -129,7 +125,10 @@ def sampler(grid):
 
 
 @pytest.mark.parametrize("degrees", DEGREES)
-def test_local_assembler_complete_operator(problem_definition, sampler, degrees):
+@pytest.mark.parametrize("operator", OPERATORS)
+def test_local_assembler_complete_operator(
+    problem_definition, sampler, degrees, operator
+):
 
     domain, dirichlet, _ = problem_definition
 
@@ -142,64 +141,69 @@ def test_local_assembler_complete_operator(problem_definition, sampler, degrees)
     mu = mus[0]
     t = 5.0
 
-    Ah = solver.assemble_stiffness(mu=mu, t=t)
+    if operator == "stiffness":
+        assemble = solver.assemble_stiffness
+    elif operator == "mass":
+        assemble = solver.assemble_mass
+
+    Ah = assemble(mu=mu, t=t)
     Ah = bilinear_to_csr(Ah)
 
     rows, cols, entries = get_nonzero_entries(Ah)
-
     idx = list(zip(rows, cols))
-    check = solver.assemble_stiffness(mu=mu, t=t, entries=idx)
 
-    #  Apply boundary conditions
-    boundary_value = 1.0
-    mask_ones = np.isclose(entries, boundary_value)
-    check[mask_ones] = boundary_value
+    check = assemble(mu=mu, t=t, entries=idx)
 
     assert_allclose(entries, check)
 
 
-def test_mdeim_tree_walk(problem_definition, grid):
+@pytest.mark.parametrize("operator", OPERATORS)
+def test_mdeim_tree_walk(problem_definition, grid, operator):
 
     domain, dirichet, _ = problem_definition
-    domain["nx"] = 5
+    domain["nx"] = 100
 
     solver = MockSolver(domain=domain, dirichlet=dirichet)
     solver.setup()
 
     ts = np.linspace(0, 5.0, 20)
     tree_walk = {"ts": ts, "num_snapshots": 50}
-    Ah_mdeim = MatrixDiscreteEmpiricalInterpolation(
-        assemble=solver.assemble_stiffness, tree_walk_params=tree_walk, grid=grid
+
+    if operator == "stiffness":
+        assemble_fom = solver.assemble_stiffness
+    elif operator == "mass":
+        assemble_fom = solver.assemble_mass
+
+    mdeim = MatrixDiscreteEmpiricalInterpolation(
+        name=operator,
+        assemble=assemble_fom,
+        tree_walk_params=tree_walk,
+        grid=grid,
     )
 
     rnd = np.random.RandomState(0)
-    Ah_mdeim.setup(rnd=rnd)
-    Ah_mdeim.run()
+    mdeim.setup(rnd=rnd)
+    mdeim.run()
 
-    #  -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
     # Assemble with a used parameter
-    #  -------------------------------------------------------------------------
-    mu = Ah_mdeim.mu_space[Ah_mdeim.OFFLINE][0]
+    # -------------------------------------------------------------------------
+    mu = mdeim.mu_space[mdeim.OFFLINE][0]
     print("Train mu:")
     pprint(mu)
-    expected = solver.assemble_stiffness(mu=mu, t=1.0)
+    expected = assemble_fom(mu=mu, t=1.0)
     expected = bilinear_to_csr(expected)
     expected.eliminate_zeros()
     expected = expected.data
 
-    approximation = Ah_mdeim.interpolate(mu=mu, t=1.0)
+    approximation = mdeim.interpolate(mu=mu, t=1.0)
     approximation = approximation.data
-
-    # Apply boundary conditions
-    boundary_value = 1.0
-    mask_ones = np.isclose(expected, boundary_value)
-    approximation[mask_ones] = boundary_value
 
     assert_allclose(expected, approximation)
 
-    #  -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
     # Assemble with an unseen parameter
-    #  -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
     rng = np.random.RandomState(19219)
     test_sampler = ParameterSampler(
         param_distributions=grid,
@@ -215,19 +219,16 @@ def test_mdeim_tree_walk(problem_definition, grid):
     pprint(mu)
 
     # Assemble full array
-    expected = solver.assemble_stiffness(mu=mu, t=1.0)
+    expected = assemble_fom(mu=mu, t=1.0)
     expected = bilinear_to_csr(expected)
     expected.eliminate_zeros()
     expected = expected.data
 
-    approximation = Ah_mdeim.interpolate(mu=mu, t=1.0)
+    approximation = mdeim.interpolate(mu=mu, t=1.0)
     approximation = approximation.data
-
-    # Apply boundary conditions
-    approximation[mask_ones] = boundary_value
 
     assert_allclose(expected, approximation)
 
-    Ah_mdeim.evaluate(num=50, ts=tree_walk["ts"])
+    mdeim.evaluate(num=50, ts=tree_walk["ts"])
 
     pass

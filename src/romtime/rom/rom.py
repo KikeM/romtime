@@ -1,11 +1,9 @@
 from functools import partial
 
 import fenics
-import matplotlib.pyplot as plt
 import numpy as np
-from romtime.base import OneDimensionalSolver
-from romtime.pod import orth
-from romtime.rom.base import Reductor
+from dolfin.cpp.la import Matrix, Vector
+from romtime.fom.base import OneDimensionalSolver
 from romtime.utils import (
     bilinear_to_csr,
     function_to_array,
@@ -14,6 +12,9 @@ from romtime.utils import (
 )
 from scipy.sparse.linalg import gmres
 from tqdm import tqdm
+
+from .base import Reductor
+from .pod import orth
 
 
 class RomConstructor(Reductor):
@@ -53,6 +54,18 @@ class RomConstructor(Reductor):
         self.mdeim_Ah = None
 
     def to_fom_vector(self, uN):
+        """Build FOM vector from ROM basis functions.
+
+        uh = V uN
+
+        Parameters
+        ----------
+        uN : np.array
+
+        Returns
+        -------
+        uh : np.array
+        """
 
         V = self.basis
         uh = V.dot(uN)
@@ -60,30 +73,48 @@ class RomConstructor(Reductor):
         return uh
 
     def to_rom_vector(self, uh):
+        """Project FOM vector into ROM space.
+
+        uN = V^T uh
+
+        Parameters
+        ----------
+        uh : np.array
+
+        Returns
+        -------
+        uN : np.array
+        """
 
         V = self.basis
         uh_vec = function_to_array(uh)
 
         return V.T.dot(uh_vec)
 
-    def to_rom_bilinear(self, Ah):
+    def to_rom(self, oph):
+        """Project FOM operator to ROM space.
 
-        Ah = bilinear_to_csr(Ah)
+        Parameters
+        ----------
+        oph : dolfin.cpp.la.Matrix or dolfin.cpp.la.Vector
+            FOM operator.
+
+        Returns
+        -------
+        opN : np.array
+            ROM operator.
+        """
 
         V = self.basis
-        AN = project_csr(Ah, V)
 
-        return AN
+        if isinstance(oph, Matrix):
+            oph = bilinear_to_csr(oph)
+            opN = project_csr(oph, V)
+        elif isinstance(oph, Vector):
+            oph = functional_to_array(oph)
+            opN = V.T.dot(oph)
 
-    def to_rom_functional(self, fh, is_array=False):
-
-        if not is_array:
-            fh = functional_to_array(fh)
-
-        V = self.basis
-        fN = V.T.dot(fh)
-
-        return fN
+        return opN
 
     def setup(self, rnd):
         """Prepare reduction structures.
@@ -288,12 +319,22 @@ class RomConstructor(Reductor):
             self.exact.update({idx_mu: exact})
 
     def assemble_mass(self, mu, t):
+        """Assemble reduced mass operator.
 
+        Parameters
+        ----------
+        mu : dict
+        t : float
+
+        Returns
+        -------
+        MN : np.array
+        """
         if self.mdeim_Mh:
-            MN = self.mdeim_Mh.interpolate(mu=mu, t=t, which=self.mdeim_Mh.ROM)
-        # Assemble FOM operator
-        Mh = self.fom.assemble_mass(mu, t)
-        MN = self.to_rom_bilinear(Mh)
+            MN = self.mdeim_Mh.interpolate(mu=mu, t=t, which=self.ROM)
+        else:
+            Mh = self.fom.assemble_mass(mu, t)
+            MN = self.to_rom(Mh)
 
         return MN
 
@@ -311,11 +352,11 @@ class RomConstructor(Reductor):
         """
 
         if self.mdeim_Ah:
-            AN = self.mdeim_Ah.interpolate(mu=mu, t=t, which=self.mdeim_Ah.ROM)
+            AN = self.mdeim_Ah.interpolate(mu=mu, t=t, which=self.ROM)
         else:
             # Assemble FOM operator
             Ah = self.fom.assemble_stiffness(mu, t)
-            AN = self.to_rom_bilinear(Ah)
+            AN = self.to_rom(Ah)
 
         return AN
 
@@ -334,13 +375,13 @@ class RomConstructor(Reductor):
 
         # Assemble FOM operator
         if self.deim_rhs:
-            fN_vec = self.deim_rhs.interpolate(mu=mu, t=t, which=self.deim_rhs.ROM)
+            fN_vec = self.deim_rhs.interpolate(mu=mu, t=t, which=self.ROM)
         else:
             fh = self.fom.assemble_forcing(mu, t)
             fgh = self.fom.assemble_lifting(mu, t)
 
-            fN = self.to_rom_functional(fh, is_array=False)
-            fgN = self.to_rom_functional(fgh, is_array=False)
+            fN = self.to_rom(fh)
+            fgN = self.to_rom(fgh)
             fN_vec = fN + fgN
 
         return fN_vec
@@ -360,10 +401,10 @@ class RomConstructor(Reductor):
 
         # Assemble FOM operator
         if self.deim_fh:
-            fN = self.deim_fh.interpolate(mu=mu, t=t, which=self.deim_fh.ROM)
+            fN = self.deim_fh.interpolate(mu=mu, t=t, which=self.ROM)
         else:
             fh = self.fom.assemble_forcing(mu, t)
-            fN = self.to_rom_functional(fh, is_array=False)
+            fN = self.to_rom(fh)
 
         return fN
 
@@ -381,9 +422,9 @@ class RomConstructor(Reductor):
         """
 
         if self.deim_fgh:
-            fgN = self.deim_fgh.interpolate(mu=mu, t=t, which=self.deim_fh.ROM)
+            fgN = self.deim_fgh.interpolate(mu=mu, t=t, which=self.ROM)
         else:
             fgh = self.fom.assemble_lifting(mu, t)
-            fgN = self.to_rom_functional(fgh, is_array=False)
+            fgN = self.to_rom(fgh)
 
         return fgN

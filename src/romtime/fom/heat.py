@@ -1,6 +1,6 @@
 import fenics
 
-from romtime.base import OneDimensionalSolver
+from .base import OneDimensionalSolver
 
 
 class HeatEquationSolver(OneDimensionalSolver):
@@ -74,22 +74,6 @@ class HeatEquationSolver(OneDimensionalSolver):
             Ah_mat = self.assemble_operator(Ah, bc)
 
         return Ah_mat
-
-    def assemble_mass(self, mu, t, entries=None):
-
-        # Extract names to have a clean implementation
-        dx = fenics.dx
-        u, v = self.u, self.v
-
-        Mh = u * v * dx
-
-        if entries:
-            Mh_mat = self.assemble_local(form=Mh, entries=entries)
-        else:
-            bc = self.define_homogeneous_dirichlet_bc()
-            Mh_mat = self.assemble_operator(Mh, bc)
-
-        return Mh_mat
 
     def assemble_forcing(self, mu, t, entries=None):
         """Assemble forcing vector.

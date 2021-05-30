@@ -10,12 +10,14 @@ import pandas as pd
 import pytest
 from numpy.testing import assert_array_almost_equal
 from pandas.testing import assert_frame_equal, assert_series_equal
-from romtime.heat import HeatEquationSolver
-from romtime.parameters import get_uniform_dist
-from romtime.rom.deim import DiscreteEmpiricalInterpolation
-from romtime.rom.mdeim import MatrixDiscreteEmpiricalInterpolation
-from romtime.rom.rom import RomConstructor
-from romtime.utils import function_to_array, plot, round_parameters
+from romtime.deim import (
+    DiscreteEmpiricalInterpolation,
+    MatrixDiscreteEmpiricalInterpolation,
+)
+from romtime.fom import HeatEquationSolver
+from romtime.parameters import get_uniform_dist, round_parameters
+from romtime.rom import RomConstructor
+from romtime.utils import function_to_array, plot
 from sklearn.model_selection import ParameterSampler
 
 fenics.set_log_level(50)

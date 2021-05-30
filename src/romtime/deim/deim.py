@@ -1,9 +1,8 @@
 import numpy as np
-from romtime.pod import orth
+from romtime.rom.base import Reductor
+from romtime.rom.pod import orth
 from romtime.utils import functional_to_array, plot
 from tqdm import tqdm
-
-from .base import Reductor
 
 
 def basis_vector(size, index):
@@ -15,8 +14,6 @@ def basis_vector(size, index):
 
 class DiscreteEmpiricalInterpolation(Reductor):
 
-    FOM = "fom"
-    ROM = "rom"
     TYPE = "DEIM"
 
     def __init__(
