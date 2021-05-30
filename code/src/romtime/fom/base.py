@@ -1,15 +1,19 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from itertools import product
 
 import fenics
 import numpy as np
+from romtime.utils import bilinear_to_csr, function_to_array
+from scipy.sparse import find as get_nonzero_entries
 from tqdm import tqdm
-
-from romtime.utils import function_to_array
-from itertools import product
 
 
 class OneDimensionalSolver(ABC):
+
+    DIRICHLET_ENTRY = 1.0
+    DIRICHLET_VALUE = 0.0
+
     def __init__(
         self,
         domain=None,
@@ -50,6 +54,8 @@ class OneDimensionalSolver(ABC):
         # Mappings for local integration
         self.cell_to_dofs = None
         self.dof_to_cells = None
+        self.entries_dirichlet = None
+        self.dofs_dirichlet = None
 
         # Snapshots Collection
         self.solutions = None  # Actual solutions
@@ -119,11 +125,37 @@ class OneDimensionalSolver(ABC):
         # Create mappings for (M)DEIM
         self.build_cell_to_dofs()
         self.build_dofs_to_cells()
+        self.find_dirichlet_entries()
 
         if self.filename is not None:
             self.file = fenics.File(self.filename)
 
         self.algebraic_solver = self.create_algebraic_solver()
+
+    def find_dirichlet_entries(self):
+        """Find Dirichlet BCs entries in matrices and vectors.
+
+        This is necessary for the (M)DEIM procedure.
+        """
+
+        # Assemble the mass matrix
+        Mh = OneDimensionalSolver.assemble_mass(self)
+        Mh = bilinear_to_csr(Mh)
+        Mh.eliminate_zeros()
+
+        # Find the values equal to one
+        rows, cols, values = get_nonzero_entries(Mh)
+        mask_ones = np.isclose(values, self.DIRICHLET_ENTRY)
+        dirichlet_dofs = [(dof,) for dof in rows[mask_ones]]
+        dirichlet_entries = list(
+            zip(
+                rows[mask_ones],
+                cols[mask_ones],
+            )
+        )
+
+        self.entries_dirichlet = dirichlet_entries
+        self.dofs_dirichlet = dirichlet_dofs
 
     def update_parametrization(self, new):
         """Update parameter vector.
@@ -133,7 +165,6 @@ class OneDimensionalSolver(ABC):
         new : dict
             New parameter vector.
         """
-
         self.mu = new.copy()
 
     def create_algebraic_solver(self):
@@ -300,48 +331,64 @@ class OneDimensionalSolver(ABC):
         """
 
         # Get mappings
-        dof_to_cells = self.dof_to_cells
         cell_to_dofs = self.cell_to_dofs
 
+        # ---------------------------------------------------------------------
+        # Detect if we have a vector (I,) or matrix (I,J)
+        # ---------------------------------------------------------------------
         is_vector = len(entries[0]) == 1
 
         entry_integral = []
         for entry in entries:
 
-            # Select cells spanned by the basis function linked to the DOF
-            cells_to_cover = []
-            for dof in entry:
-                cells_to_cover.extend(dof_to_cells[dof])
+            # -----------------------------------------------------------------
+            # Apply Dirichlet BC if entry is Dirichlet
+            # -----------------------------------------------------------------
+            # Matrix
+            if entry in self.entries_dirichlet:
+                contribution = self.DIRICHLET_ENTRY
+            # Vector
+            elif entry in self.dofs_dirichlet:
+                contribution = self.DIRICHLET_VALUE
 
-            # Remove duplicates
-            cells_to_cover = set(cells_to_cover)
+            # -----------------------------------------------------------------
+            # Integrate local cells to obtain contribution
+            # -----------------------------------------------------------------
+            else:
+                cells_to_cover = self.find_cells_to_cover(entry)
 
-            contribution = 0.0
-            for cell in cells_to_cover:
+                contribution = 0.0
+                for cell in cells_to_cover:
 
-                # Unpack data
-                idx, coords, cell_cpp = cell
+                    # Unpack data
+                    idx, coords, cell_cpp = cell
 
-                # Create local element coordinates map
-                dofs_local2global = cell_to_dofs[cell]
+                    # Create local element coordinates map
+                    dofs_local2global = cell_to_dofs[cell]
 
-                if is_vector:
-                    map_to_local = dofs_local2global
-                else:
-                    # Create element matrix coordinates
-                    map_to_local = list(product(dofs_local2global, dofs_local2global))
+                    if is_vector:
+                        map_to_local = dofs_local2global
+                    else:
+                        # Create element matrix coordinates
+                        map_to_local = list(
+                            product(dofs_local2global, dofs_local2global)
+                        )
 
-                if entry in map_to_local:
+                    # ---------------------------------------------------------
                     # Assemble local operator
-                    local = fenics.assemble_local(form, cell_cpp)
-                    local = local.flatten()
+                    # ---------------------------------------------------------
+                    if entry in map_to_local:
+                        local = fenics.assemble_local(form, cell_cpp)
+                        local = local.flatten()
 
-                    # Select the entry with the contribution
-                    local_idx = map_to_local.index(entry)
-                    _contribution = local[local_idx]
-                    contribution += _contribution
-                else:
-                    continue
+                        # -----------------------------------------------------
+                        # Select the entry with the contribution
+                        # -----------------------------------------------------
+                        local_idx = map_to_local.index(entry)
+                        _contribution = local[local_idx]
+                        contribution += _contribution
+                    else:
+                        continue
 
             entry_integral.append(contribution)
 
@@ -350,47 +397,75 @@ class OneDimensionalSolver(ABC):
 
         return weak_vec
 
+    def find_cells_to_cover(self, entry):
+        """Find cells covered by the DOFs to integrate locally.
+
+        Parameters
+        ----------
+        entry : tuple
+        dof_to_cells : mapping
+            [description]
+
+        Returns
+        -------
+        cells_to_cover : set of Cells
+        """
+        dof_to_cells = self.dof_to_cells
+
+        # Select cells spanned by the basis function linked to the DOF
+        cells_to_cover = []
+        for dof in entry:
+            cells_to_cover.extend(dof_to_cells[dof])
+
+        # Remove duplicates
+        cells_to_cover = set(cells_to_cover)
+
+        return cells_to_cover
+
     @abstractmethod
-    def assemble_stiffness(self, mu, t, dofs=None):
+    def assemble_stiffness(self, mu, t, entries=None):
         """Assemble stiffness matrix terms.
 
         Parameters
         ----------
         mu : dict
         t : float
-        dofs : list, optional
+        entries : list, optional
             Local integration, by default None
         """
         pass
 
-    @abstractmethod
-    def assemble_mass(self, mu, t, dofs=None):
-        """Assemble mass matrix.
+    def assemble_mass(self, mu=None, t=None, entries=None):
 
-        Parameters
-        ----------
-        mu : dict
-        t : float
-        dofs : list, optional
-            Local integration, by default None
-        """
-        pass
+        # Extract names to have a clean implementation
+        dx = fenics.dx
+        u, v = self.u, self.v
+
+        Mh = u * v * dx
+
+        if entries:
+            Mh_mat = self.assemble_local(form=Mh, entries=entries)
+        else:
+            bc = self.define_homogeneous_dirichlet_bc()
+            Mh_mat = self.assemble_operator(Mh, bc)
+
+        return Mh_mat
 
     @abstractmethod
-    def assemble_forcing(self, mu, t, dofs=None):
+    def assemble_forcing(self, mu, t, entries=None):
         """Assemble forcing terms.
 
         Parameters
         ----------
         mu : dict
         t : float
-        dofs : list, optional
+        entries : list, optional
             Local integration, by default None
         """
         pass
 
     @abstractmethod
-    def assemble_lifting(self, mu, t, dofs=None):
+    def assemble_lifting(self, mu, t, entries=None):
         """Assemble lifting terms to enforce boundary conditions.
 
         Parameters

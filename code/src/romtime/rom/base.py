@@ -1,11 +1,14 @@
 from collections import defaultdict
 
 import numpy as np
-from romtime.utils import round_parameters
+from romtime.parameters import round_parameters
 from sklearn.model_selection import ParameterSampler
 
 
 class Reductor:
+
+    FOM = "fom"
+    ROM = "rom"
 
     OFFLINE = "offline"
     ONLINE = "online"

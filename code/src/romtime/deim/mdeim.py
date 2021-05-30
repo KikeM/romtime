@@ -1,11 +1,12 @@
 import numpy as np
-from romtime.rom.deim import DiscreteEmpiricalInterpolation
 from romtime.utils import (
     bilinear_to_csr,
     get_nonzero_entries,
     project_csr,
     vector_to_csr,
 )
+
+from .deim import DiscreteEmpiricalInterpolation
 
 
 class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):

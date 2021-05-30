@@ -37,8 +37,9 @@ def orth(snapshots, num=None, tol=None, orthogonalize=True):
     # SVD compression
     u, s, _ = svd(_snapshots, full_matrices=False)
 
-    #  Clean noisy basis vectors
+    # Clean noisy basis vectors
     u = u[:, s > DROP_TOLERANCE]
+
     if num:
         Q = u[:, :num]
     else:
