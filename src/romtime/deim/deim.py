@@ -75,7 +75,7 @@ class DiscreteEmpiricalInterpolation(Reductor):
         self.dofs = list
 
     def run(self, orthogonalize=True, num_pod=None, tol_pod=None):
-        """Create all the structures necessary for DEIM.
+        """Run DEIM offline phase.
 
         Parameters
         ----------
@@ -87,8 +87,6 @@ class DiscreteEmpiricalInterpolation(Reductor):
             # No snapshots, no basis, perform tree walk
             if self.snapshots is None:
                 params = self.tree_walk_params
-                assert params is not None, "Please provide tree-walk parameters."
-
                 Vfh, sigmas = self.perform_tree_walk(
                     **params, orthogonalize=orthogonalize
                 )
@@ -214,9 +212,9 @@ class DiscreteEmpiricalInterpolation(Reductor):
             sampler, desc=f"({self.TYPE}-{self.name}) Walk in mu", leave=True
         ):
 
-            idx_mu, mu = self.add_mu(step=self.OFFLINE, mu=mu)
+            mu_idx, mu = self.add_mu(step=self.OFFLINE, mu=mu)
 
-            _basis, sigmas = self._walk_in_time(
+            _basis, sigmas_time = self._walk_in_time(
                 mu=mu,
                 ts=ts,
                 num=num_t,
@@ -224,17 +222,25 @@ class DiscreteEmpiricalInterpolation(Reductor):
                 orthogonalize=orthogonalize,
             )
 
+            self.report[self.OFFLINE]["spectrum-time"][mu_idx] = sigmas_time
+            self.report[self.OFFLINE]["basis-shape-time"][mu_idx] = _basis.shape[1]
+
             basis_time.append(_basis)
 
-        basis_time = np.hstack(basis_time)
-        basis, sigmas = orth(
-            snapshots=basis_time,
+        basis = np.hstack(basis_time)
+        self.report[self.OFFLINE]["basis-shape-after-tree-walk"] = basis.shape[1]
+
+        basis, sigmas_mu = orth(
+            snapshots=basis,
             num=num_mu,
-            tol=tol_t,
+            tol=tol_mu,
             orthogonalize=orthogonalize,
         )
 
-        return basis, sigmas
+        self.report[self.OFFLINE]["spectrum-mu"] = sigmas_mu
+        self.report[self.OFFLINE]["basis-shape-final"] = basis.shape[1]
+
+        return basis, sigmas_mu
 
     def _walk_in_time(self, mu, ts, orthogonalize=True, num=None, tol=None):
         """Walk in the time-branch of the tree walk.
@@ -344,7 +350,7 @@ class DiscreteEmpiricalInterpolation(Reductor):
 
         The public interface of the MDEIM returns a CSR matrix.
         """
-        return self._interpolate(mu=mu, t=t, which=None)
+        return self._interpolate(mu=mu, t=t, which=which)
 
     def compute_thetas(self, rhs):
         """Compute interpolation coefficients.
