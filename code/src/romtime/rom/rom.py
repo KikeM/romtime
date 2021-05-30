@@ -168,6 +168,8 @@ class RomConstructor(Reductor):
             self.deim_fh.project_basis(V=self.basis)
         if self.deim_fgh is not None:
             self.deim_fgh.project_basis(V=self.basis)
+        if self.deim_rhs is not None:
+            self.deim_rhs.project_basis(V=self.basis)
 
         if self.mdeim_Mh is not None:
             self.mdeim_Mh.project_basis(V=self.basis)
@@ -188,7 +190,8 @@ class RomConstructor(Reductor):
 
         # Put up the solver and start loop in parameter space
         fom = self.fom
-        fom.setup()
+        if fom.is_setup == False:
+            fom.setup()
 
         basis_time = list()
         for mu in tqdm(sampler, desc="(ROM) Building reduced basis"):
@@ -201,15 +204,19 @@ class RomConstructor(Reductor):
             fom.solve()
 
             # Orthonormalize the time-snapshots
-            _basis, sigmas = orth(fom._snapshots)
+            _basis, sigmas_time = orth(fom._snapshots)
             basis_time.append(_basis)
 
+            self.report[self.OFFLINE]["spectrum-time"][mu_idx] = sigmas_time
+            self.report[self.OFFLINE]["basis-shape-time"][mu_idx] = _basis.shape[1]
+
         basis = np.hstack(basis_time)
-        self.report.update({"Basis shape after tree-walk": basis.shape})
+        self.report[self.OFFLINE]["basis-shape-after-tree-walk"] = basis.shape[1]
 
         # Compress again all the basis
-        basis, sigmas = orth(basis, num=num_basis)
-        self.report.update({"Basis shape after compression": basis.shape})
+        basis, sigmas_mu = orth(basis, num=num_basis)
+        self.report[self.OFFLINE]["spectrum-mu"] = sigmas_mu
+        self.report[self.OFFLINE]["basis-shape-final"] = basis.shape[1]
 
         # Store reduced basis
         self.N = basis.shape[1]
@@ -228,7 +235,7 @@ class RomConstructor(Reductor):
 
         return solver
 
-    def solve(self, mu):
+    def solve(self, mu, step):
         """Solve problem with ROM.
 
         Parameters
@@ -237,7 +244,7 @@ class RomConstructor(Reductor):
             Parameter-point.
         """
 
-        idx_mu, mu = self.add_mu(mu=mu, step=self.ONLINE)
+        idx_mu, mu = self.add_mu(mu=mu, step=step)
 
         fom = self.fom
 
@@ -246,7 +253,7 @@ class RomConstructor(Reductor):
         liftings = dict()
 
         if fom.exact_solution is not None:
-            errors = dict()
+            errors = []
             exact = dict()
         else:
             ue = None
@@ -259,7 +266,7 @@ class RomConstructor(Reductor):
         t = 0.0
         uN_n = np.zeros(shape=self.N)
         for timestep in tqdm(
-            range(fom.domain["nt"]), desc="(ROM-DEIM) Online evaluation", leave=False
+            range(fom.domain["nt"]), desc="(ROM) Online evaluation", leave=False
         ):
 
             # Update time
@@ -308,14 +315,14 @@ class RomConstructor(Reductor):
                 exact[t] = ue_h.copy()
 
                 error = self._compute_error(u=uc_h, ue=ue_h)
-                errors[t] = error
+                errors.append(error)
 
-        self.timesteps.update({idx_mu: timesteps})
+        self.timesteps = timesteps
         self.solutions.update({idx_mu: solutions})
         self.liftings.update({idx_mu: liftings})
 
         if ue is not None:
-            self.errors.update({idx_mu: errors})
+            self.errors.update({idx_mu: np.array(errors)})
             self.exact.update({idx_mu: exact})
 
     def assemble_mass(self, mu, t):
