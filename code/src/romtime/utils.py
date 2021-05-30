@@ -121,19 +121,3 @@ def vector_to_csr(entries, rows, cols):
     csr_matrix
     """
     return csr_matrix((entries, (rows, cols)))
-
-
-def round_parameters(sample, num=2):
-
-    rounded_dict = dict((k, round(v, num)) for (k, v) in sample.items())
-
-    return rounded_dict
-
-
-def round_parameter_list(param_list, num=2):
-
-    rounded_list = [
-        dict((k, round(v, num)) for (k, v) in d.items()) for d in param_list
-    ]
-
-    return rounded_list

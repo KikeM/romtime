@@ -4,9 +4,9 @@ import fenics
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
-from romtime.base import OneDimensionalSolver
+from romtime.fom import OneDimensionalSolver
 from romtime.parameters import get_uniform_dist
-from romtime.rom.deim import DiscreteEmpiricalInterpolation
+from romtime.deim import DiscreteEmpiricalInterpolation
 from romtime.utils import functional_to_array, plot
 from sklearn.model_selection import ParameterSampler
 
@@ -135,11 +135,6 @@ def test_local_assembler_complete_vector(problem_definition, sampler, degree):
 
     entries = [(dof,) for dof in range(len(fh))]
     check = solver.assemble_forcing(mu=mu, t=t, entries=entries)
-
-    #  Apply boundary conditions
-    boundary_value = 0.0
-    mask_ones = np.isclose(fh, boundary_value)
-    check[mask_ones] = boundary_value
 
     assert_allclose(fh, check)
 
@@ -272,4 +267,3 @@ def test_deim_tree_walk(problem_definition, grid):
     assert_allclose(expected, approximation, atol=1e-15)
 
     fh_deim.evaluate(num=50, ts=tree_walk["ts"])
-    pass
