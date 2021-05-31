@@ -15,7 +15,12 @@ import matplotlib.pyplot as plt
 
 def define_mfp1_problem(L=None, nx=None, tf=None, nt=None):
 
-    domain = {"L": L, "nx": nx, "T": tf, "nt": nt}
+    domain = {
+        HeatEquationSolver.L0: L,
+        HeatEquationSolver.T: tf,
+        HeatEquationSolver.NX: nx,
+        HeatEquationSolver.NT: nt,
+    }
 
     #  Boundary conditions
     b0 = "(1.0 - exp(- beta * t))"
@@ -24,12 +29,12 @@ def define_mfp1_problem(L=None, nx=None, tf=None, nt=None):
     # TODO: This could be computed with sympy
     # but I don't need this overhead for the moment
     db0_dt = "beta * exp(- beta * t)"
-    dbL_dt = "(beta * exp(- beta * t)) * (1.0 + delta*delta * L * L)"
+    dbL_dt = "beta * exp(- beta * t) * (1.0 + delta * delta * L * L) + (2.0 * (1.0 - exp(- beta * t)) * (delta * delta) * L) * dLt_dt"
 
     boundary_conditions = {"b0": b0, "bL": bL, "db0_dt": db0_dt, "dbL_dt": dbL_dt}
 
     # Forcing term
-    forcing_term = """beta * exp(- beta * t) * (1.0 + delta*delta*x[0]*x[0])-2.0 * delta * delta * alpha_0 * (1.0 - exp(- beta * t))"""
+    forcing_term = """beta * exp(- beta * t) * (1.0 + delta * delta * x[0] * x[0]) - 2.0 * delta * delta * alpha_0 * (1.0 - exp(- beta * t))"""
 
     # Initial condition
     u0 = fenics.Constant(0.0)
@@ -37,7 +42,37 @@ def define_mfp1_problem(L=None, nx=None, tf=None, nt=None):
     # Exact solution
     ue = "(1.0 - exp(-beta*t)) * (1.0 + delta*delta * x[0]*x[0])"
 
-    return domain, boundary_conditions, forcing_term, u0, ue
+    def Lt(omega, t, **kwargs):
+        """Mesh scaling function.
+
+        Parameters
+        ----------
+        omega : float
+            Boundary frequency
+        t : float
+
+        Returns
+        -------
+        float
+        """
+        return 1.0 - np.sin(omega * t)
+
+    def dLt_dt(omega, t, **kwargs):
+        """Mesh scaling function time derivative.
+
+        Parameters
+        ----------
+        omega : float
+            Boundary frequency
+        t : float
+
+        Returns
+        -------
+        float
+        """
+        return -omega * np.cos(omega * t)
+
+    return domain, boundary_conditions, forcing_term, u0, ue, Lt, dLt_dt
 
 
 class HyperReducedOrderModel:

@@ -4,86 +4,20 @@ import fenics
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
-from romtime.fom import OneDimensionalSolver
-from romtime.parameters import get_uniform_dist
 from romtime.deim import MatrixDiscreteEmpiricalInterpolation
-from romtime.utils import (
-    bilinear_to_csr,
-    get_nonzero_entries,
-)
+from romtime.parameters import get_uniform_dist
+from romtime.testing import MockSolver
+from romtime.utils import bilinear_to_csr, get_nonzero_entries
 from sklearn.model_selection import ParameterSampler
 
 DEGREES = [1, 2, 3, 4, 5]
 OPERATORS = ["stiffness", "mass"]
 
 
-class MockSolver(OneDimensionalSolver):
-    def __init__(
-        self,
-        domain,
-        dirichlet,
-        degrees=1,
-    ) -> None:
-        super().__init__(
-            domain=domain,
-            dirichlet=dirichlet,
-            poly_type="P",
-            degrees=degrees,
-        )
-
-    def create_diffusion_coefficient(self, mu, t):
-        """Create non-linear diffusion term.
-
-        \\alpha(x) = \\alpha_0 (1 + \\varepsilon x^2)
-
-        Returns
-        -------
-        alpha : fenics.Expression
-        """
-
-        alpha_0 = mu["alpha_0"]
-        epsilon = mu["epsilon"]
-
-        alpha = fenics.Expression(
-            "alpha_0 * (1.0 + epsilon * x[0] * x[0]) * (1.0 + t*t)",
-            degree=2,
-            alpha_0=alpha_0,
-            epsilon=epsilon,
-            t=t,
-        )
-
-        return alpha
-
-    def assemble_stiffness(self, mu, t, entries=None):
-
-        # ---------------------------------------------------------------------
-        # Weak Formulation
-        # ---------------------------------------------------------------------
-        dot, dx, grad = fenics.dot, fenics.dx, fenics.grad
-        u, v = self.u, self.v
-
-        alpha = self.create_diffusion_coefficient(mu=mu, t=t)
-        Ah = alpha * dot(grad(u), grad(v)) * dx
-
-        if entries:
-            Ah_mat = self.assemble_local(Ah, entries=entries)
-        else:
-            bc = self.define_homogeneous_dirichlet_bc()
-            Ah_mat = self.assemble_operator(Ah, bc)
-
-        return Ah_mat
-
-    def assemble_forcing(self, mu, t, dofs=None):
-        pass
-
-    def assemble_lifting(self, mu, t):
-        pass
-
-
 @pytest.fixture
 def problem_definition():
 
-    domain = {"L": fenics.Constant(1.0), "nx": 100, "T": 5.0, "nt": 100}
+    domain = {"L0": 1.0, "nx": 100, "T": 5.0, "nt": 100}
 
     #  Boundary conditions
     b0 = "(1.0 - exp(- beta * t))"
@@ -134,7 +68,9 @@ def test_local_assembler_complete_operator(
 
     domain["nx"] = 100
 
-    solver = MockSolver(domain=domain, dirichlet=dirichlet, degrees=degrees)
+    solver = MockSolver(
+        domain=domain, dirichlet=dirichlet, degrees=degrees, forcing_term=None
+    )
     solver.setup()
 
     mus = list(sampler)
@@ -163,7 +99,7 @@ def test_mdeim_tree_walk(problem_definition, grid, operator):
     domain, dirichet, _ = problem_definition
     domain["nx"] = 100
 
-    solver = MockSolver(domain=domain, dirichlet=dirichet)
+    solver = MockSolver(domain=domain, dirichlet=dirichet, forcing_term=None)
     solver.setup()
 
     ts = np.linspace(0, 5.0, 20)

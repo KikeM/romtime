@@ -14,9 +14,9 @@ from romtime.deim import (
     DiscreteEmpiricalInterpolation,
     MatrixDiscreteEmpiricalInterpolation,
 )
-from romtime.fom import HeatEquationSolver
+from romtime.fom import HeatEquationMovingSolver, HeatEquationSolver
 from romtime.parameters import get_uniform_dist, round_parameters
-from romtime.problems.mfp1 import define_mfp1_problem, HyperReducedOrderModel
+from romtime.problems.mfp1 import HyperReducedOrderModel, define_mfp1_problem
 from romtime.rom import RomConstructor
 from romtime.utils import function_to_array, plot
 from sklearn.model_selection import ParameterSampler
@@ -26,10 +26,11 @@ fenics.set_log_level(50)
 from pathlib import Path
 
 HERE = Path(__file__).parent
-PATH_DATA = HERE / "external" / "MPF1" / "fixed"
+PATH_FIXED = HERE / "external" / "MPF1" / "fixed"
+PATH_MOVING = HERE / "external" / "MPF1" / "moving"
 
 
-def create_solver(L, nx, nt, tf, grid_base):
+def create_solver(L, nx, nt, tf, grid_base, problem_class=HeatEquationSolver):
     """Solve heat equation problem.
 
     Parameters
@@ -45,19 +46,33 @@ def create_solver(L, nx, nt, tf, grid_base):
     solver : romtime.OneDimensionalHeatEquationSolver
     """
 
-    domain, boundary_conditions, forcing_term, u0, ue = define_mfp1_problem(
+    domain, boundary_conditions, forcing_term, u0, ue, Lt, dLt_dt = define_mfp1_problem(
         L, nx, tf, nt
     )
 
     # We let FEniCS determine what goes in the LHS and RHS automatically.
-    solver = HeatEquationSolver(
-        domain=domain,
-        dirichlet=boundary_conditions,
-        parameters=grid_base,
-        forcing_term=forcing_term,
-        u0=u0,
-        exact_solution=ue,
-    )
+    if problem_class is HeatEquationMovingSolver:
+
+        solver = problem_class(
+            domain=domain,
+            dirichlet=boundary_conditions,
+            parameters=grid_base,
+            forcing_term=forcing_term,
+            u0=u0,
+            exact_solution=ue,
+            Lt=Lt,
+            dLt_dt=dLt_dt,
+        )
+
+    else:
+        solver = problem_class(
+            domain=domain,
+            dirichlet=boundary_conditions,
+            parameters=grid_base,
+            forcing_term=forcing_term,
+            u0=u0,
+            exact_solution=ue,
+        )
 
     solver.setup()
 
@@ -101,7 +116,7 @@ def grid_base(parameters):
 @pytest.fixture
 def domain():
 
-    L = fenics.Constant("2")
+    L = 2.0
 
     nx = 500
 
@@ -384,11 +399,13 @@ def test_rom(domain, grid_base, grid):
 
     for mu in sampler:
         mu = round_parameters(sample=mu, num=3)
-        rom.solve(mu=mu)
+        rom.solve(mu=mu, step=rom.ONLINE)
 
     result = pd.DataFrame(rom.errors)
-    expected = pd.read_csv(PATH_DATA / "errors-rom.csv", index_col=0)
+    expected = pd.read_csv(PATH_FIXED / "errors-rom.csv", index_col=0)
     expected.columns = expected.columns.astype(int)
+
+    result.index = fom.timesteps[1:]
 
     assert_frame_equal(expected, result)
 
@@ -444,12 +461,14 @@ def test_rom_deim(domain, grid_base, grid):
     sampler = rom.build_sampling_space(num=10, rnd=rnd2)
 
     for mu in sampler:
-        rom.solve(mu=mu)
+        rom.solve(mu=mu, step=rom.ONLINE)
 
     result = pd.DataFrame(rom.errors)
 
-    expected = pd.read_csv(PATH_DATA / "errors-rom-deim.csv", index_col=0)
+    expected = pd.read_csv(PATH_FIXED / "errors-rom-deim.csv", index_col=0)
     expected.columns = expected.columns.astype(int)
+
+    result.index = fom.timesteps[1:]
 
     assert_frame_equal(expected, result)
 
@@ -536,8 +555,10 @@ def test_rom_deim_mdeim(domain, grid_base, grid):
 
     result = pd.DataFrame(hrom.errors)
 
-    expected = pd.read_csv(PATH_DATA / "errors-rom-deim.csv", index_col=0)
+    expected = pd.read_csv(PATH_FIXED / "errors-rom-deim.csv", index_col=0)
     expected.columns = expected.columns.astype(int)
+
+    result.index = fom.timesteps[1:]
 
     assert_frame_equal(expected, result)
 
@@ -545,13 +566,13 @@ def test_rom_deim_mdeim(domain, grid_base, grid):
 def test_hrom(grid):
 
     domain = dict(
-        L=fenics.Constant("2"),
+        L0=2.0,
         nx=200,
         nt=200,
         T=10.0,
     )
 
-    _, boundary_conditions, forcing_term, u0, ue = define_mfp1_problem()
+    _, boundary_conditions, forcing_term, u0, ue, _, _ = define_mfp1_problem()
 
     fom_params = dict(
         domain=domain,
@@ -688,12 +709,15 @@ def test_hrom(grid):
     pass
 
 
-def test_convergence_rates_fast(domain, grid_base):
+def test_convergence_fixed(domain, grid_base):
 
     # Parametrization
     L, nx = domain
 
     tf = -np.log(1.0 - 0.99) / grid_base["beta"]
+
+    def Lt(t, **kwargs):
+        return 1.0
 
     # Run loop
     nts = [1e1, 1e2, 1e3]
@@ -710,6 +734,8 @@ def test_convergence_rates_fast(domain, grid_base):
             grid_base=grid_base,
         )
 
+        solver.Lt = Lt
+
         solver.solve()
 
         errors_ss = pd.Series(solver.errors)
@@ -722,7 +748,7 @@ def test_convergence_rates_fast(domain, grid_base):
     results = results.interpolate(method="index").reindex(index)
     results = results.apply(np.log10)
 
-    expected = pd.read_csv(PATH_DATA / "timestep-errors.csv", index_col=0)
+    expected = pd.read_csv(PATH_FIXED / "timestep-errors.csv", index_col=0)
     expected.columns = expected.columns.astype(int)
 
     expected = expected[results.columns]
@@ -764,8 +790,66 @@ def test_convergence_rates_slow(domain, grid_base):
     results = results.interpolate(method="index").reindex(index)
     results = results.apply(np.log10)
 
-    expected = pd.read_csv(PATH_DATA / "timestep-errors.csv", index_col=0)
+    expected = pd.read_csv(PATH_FIXED / "timestep-errors.csv", index_col=0)
     expected.columns = expected.columns.astype(int)
 
     expected = expected[results.columns]
+    assert_frame_equal(expected, results, check_names=False)
+
+
+def test_convergence_moving(domain, grid_base):
+
+    # Parametrization
+    L, nx = domain
+
+    nx = 100
+
+    tf = -np.log(1.0 - 0.99) / grid_base["beta"]
+
+    omega = np.pi / 4.0 / tf
+
+    grid_base["omega"] = omega
+
+    # Run loop
+    # nts = [1e1, 1e2, 1e3, 2e3, 5e3]
+    nts = [1e1, 1e2, 1e3]
+
+    errors = []
+    for nt in [1e1]:
+
+        nt = int(nt)
+
+        solver = create_solver(
+            nx=nx,
+            nt=nt,
+            tf=tf,
+            L=L,
+            grid_base=grid_base,
+            problem_class=HeatEquationMovingSolver,
+        )
+
+        solver.solve()
+
+        errors_ss = pd.Series(solver.errors)
+        errors_ss.name = nt
+        errors.append(errors_ss)
+
+    index = errors[0].index
+
+    results = pd.DataFrame(errors).T
+    results = results.interpolate(method="index").reindex(index)
+    results = results.apply(np.log10)
+
+    # for idx in range(solver.domain_x.shape[1]):
+
+    #     x = solver.domain_x[:, idx]
+    #     sol = solver._solutions[:, idx]
+    #     plt.plot(x, sol)
+
+    # plt.show()
+
+    expected = pd.read_csv(PATH_MOVING / "timestep-errors.csv", index_col=0)
+    expected.columns = expected.columns.astype(int)
+    expected = expected[results.columns]
+
     assert_frame_equal(expected, results, check_names=False)
