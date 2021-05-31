@@ -4,75 +4,19 @@ import fenics
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
-from romtime.fom import OneDimensionalSolver
-from romtime.parameters import get_uniform_dist
 from romtime.deim import DiscreteEmpiricalInterpolation
+from romtime.parameters import get_uniform_dist
+from romtime.testing import MockSolver
 from romtime.utils import functional_to_array, plot
 from sklearn.model_selection import ParameterSampler
 
 DEGREES = [1, 2, 3, 4, 5]
 
 
-class MockSolver(OneDimensionalSolver):
-    def __init__(
-        self,
-        domain,
-        dirichlet,
-        forcing_term,
-        degrees=1,
-    ) -> None:
-        super().__init__(
-            domain=domain,
-            dirichlet=dirichlet,
-            poly_type="P",
-            degrees=degrees,
-            forcing_term=forcing_term,
-        )
-
-    def assemble_stiffness(self, mu, t):
-        pass
-
-    def assemble_mass(self, mu, t):
-        pass
-
-    def assemble_forcing(self, mu, t, entries=None):
-        """Assemble test forcing term
-
-        Parameters
-        ----------
-        mu : dict
-        t : float
-
-        Returns
-        -------
-        dolfin.cpp.la.Vector
-        """
-        # Extract names to have a clean implementation
-        dx = fenics.dx
-        v = self.v
-        forcing_term = self.forcing_term
-        f = fenics.Expression(forcing_term, degree=2, t=t, **mu)
-
-        # Weak form
-        fh = f * v * dx
-
-        #  Select between local assembly or global one
-        if entries:
-            fh_vec = self.assemble_local(form=fh, entries=entries)
-        else:
-            bc = self.define_homogeneous_dirichlet_bc()
-            fh_vec = self.assemble_operator(weak=fh, bcs=bc)
-
-        return fh_vec
-
-    def assemble_lifting(self, mu, t):
-        pass
-
-
 @pytest.fixture
 def problem_definition():
 
-    domain = {"L": fenics.Constant(1.0), "nx": 100, "T": 5.0, "nt": 100}
+    domain = {"L0": 1.0, "nx": 100, "T": 5.0, "nt": 100}
 
     #  Boundary conditions
     b0 = "(1.0 - exp(- beta * t))"
