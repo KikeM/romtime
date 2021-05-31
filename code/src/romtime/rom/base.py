@@ -11,14 +11,25 @@ class Reductor:
     ROM = "rom"
 
     OFFLINE = "offline"
+    VALIDATION = "validation"
     ONLINE = "online"
+
+    BASIS_AFTER_WALK = "basis-shape-after-tree-walk"
+    BASIS_FINAL = "basis-shape-final"
+    BASIS_TIME = "basis-shape-time"
+    SPECTRUM_MU = "spectrum-mu"
+    SPECTRUM_TIME = "spectrum-time"
 
     def __init__(self, grid) -> None:
 
         self.grid = grid
 
-        self.mu_space = {self.OFFLINE: list(), self.ONLINE: list()}
-        self.report = dict()
+        self.mu_space = {
+            self.OFFLINE: list(),
+            self.ONLINE: list(),
+            self.VALIDATION: list(),
+        }
+        self.report = defaultdict(dict)
         self.errors_rom = defaultdict(list)
 
         self.random_state = None
@@ -87,3 +98,9 @@ class Reductor:
             Random state.
         """
         self.random_state = rnd
+
+        self.report[self.OFFLINE][self.BASIS_AFTER_WALK] = None
+        self.report[self.OFFLINE][self.BASIS_FINAL] = None
+        self.report[self.OFFLINE][self.BASIS_TIME] = dict()
+        self.report[self.OFFLINE][self.SPECTRUM_MU] = None
+        self.report[self.OFFLINE][self.SPECTRUM_TIME] = dict()

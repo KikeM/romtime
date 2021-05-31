@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.linalg import svd
 
-DROP_TOLERANCE = 1e-8
+DROP_TOLERANCE = 1e-7
 
 
 def orth(snapshots, num=None, tol=None, orthogonalize=True):

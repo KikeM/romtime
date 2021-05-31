@@ -62,6 +62,8 @@ class OneDimensionalSolver(ABC):
         self.snapshots = None  # Homogeneous solutions (for ROM)
         self.liftings = None
 
+        self.is_setup = False
+
     def build_cell_to_dofs(self):
         """Create mapping between mesh cells and dofs."""
 
@@ -131,6 +133,8 @@ class OneDimensionalSolver(ABC):
             self.file = fenics.File(self.filename)
 
         self.algebraic_solver = self.create_algebraic_solver()
+
+        self.is_setup = True
 
     def find_dirichlet_entries(self):
         """Find Dirichlet BCs entries in matrices and vectors.

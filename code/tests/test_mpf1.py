@@ -16,6 +16,7 @@ from romtime.deim import (
 )
 from romtime.fom import HeatEquationSolver
 from romtime.parameters import get_uniform_dist, round_parameters
+from romtime.problems.mfp1 import define_mfp1_problem, HyperReducedOrderModel
 from romtime.rom import RomConstructor
 from romtime.utils import function_to_array, plot
 from sklearn.model_selection import ParameterSampler
@@ -26,33 +27,6 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 PATH_DATA = HERE / "external" / "MPF1" / "fixed"
-
-
-def define_mpf1_problem(L, nx, tf, nt):
-
-    domain = {"L": L, "nx": nx, "T": tf, "nt": nt}
-
-    #  Boundary conditions
-    b0 = "(1.0 - exp(- beta * t))"
-    bL = "(1.0 - exp(- beta * t)) * (1.0 + delta*delta * L * L)"
-
-    # TODO: This could be computed with sympy
-    # but I don't need this overhead for the moment
-    db0_dt = "beta * exp(- beta * t)"
-    dbL_dt = "(beta * exp(- beta * t)) * (1.0 + delta*delta * L * L)"
-
-    boundary_conditions = {"b0": b0, "bL": bL, "db0_dt": db0_dt, "dbL_dt": dbL_dt}
-
-    # Forcing term
-    forcing_term = """beta * exp(- beta * t) * (1.0 + delta*delta*x[0]*x[0])-2.0 * delta * delta * alpha_0 * (1.0 - exp(- beta * t))"""
-
-    # Initial condition
-    u0 = fenics.Constant(0.0)
-
-    # Exact solution
-    ue = "(1.0 - exp(-beta*t)) * (1.0 + delta*delta * x[0]*x[0])"
-
-    return domain, boundary_conditions, forcing_term, u0, ue
 
 
 def create_solver(L, nx, nt, tf, grid_base):
@@ -71,7 +45,7 @@ def create_solver(L, nx, nt, tf, grid_base):
     solver : romtime.OneDimensionalHeatEquationSolver
     """
 
-    domain, boundary_conditions, forcing_term, u0, ue = define_mpf1_problem(
+    domain, boundary_conditions, forcing_term, u0, ue = define_mfp1_problem(
         L, nx, tf, nt
     )
 
@@ -460,7 +434,7 @@ def test_rom_deim(domain, grid_base, grid):
     # Offline phase
     rom.setup(rnd=rnd)
     rom.build_reduced_basis(num_snapshots=10)
-    rom.add_hyper_reductor(reductor=deim_rhs, which=rom.FORCING)
+    rom.add_hyper_reductor(reductor=deim_rhs, which=rom.RHS)
     rom.project_reductors()
 
     ###########################################################################
@@ -544,7 +518,7 @@ def test_rom_deim_mdeim(domain, grid_base, grid):
     hrom.build_reduced_basis(num_snapshots=10)
 
     # Include the reduction for the algebraic operators
-    hrom.add_hyper_reductor(reductor=deim_rhs, which=hrom.FORCING)
+    hrom.add_hyper_reductor(reductor=deim_rhs, which=hrom.RHS)
     hrom.add_hyper_reductor(reductor=mdeim_stiffness, which=hrom.STIFFNESS)
     hrom.add_hyper_reductor(reductor=mdeim_mass, which=hrom.MASS)
 
@@ -558,7 +532,7 @@ def test_rom_deim_mdeim(domain, grid_base, grid):
     sampler = hrom.build_sampling_space(num=10, rnd=rnd2)
 
     for mu in sampler:
-        hrom.solve(mu=mu)
+        hrom.solve(mu=mu, step=hrom.ONLINE)
 
     result = pd.DataFrame(hrom.errors)
 
@@ -566,6 +540,152 @@ def test_rom_deim_mdeim(domain, grid_base, grid):
     expected.columns = expected.columns.astype(int)
 
     assert_frame_equal(expected, result)
+
+
+def test_hrom(grid):
+
+    domain = dict(
+        L=fenics.Constant("2"),
+        nx=200,
+        nt=200,
+        T=10.0,
+    )
+
+    _, boundary_conditions, forcing_term, u0, ue = define_mfp1_problem()
+
+    fom_params = dict(
+        domain=domain,
+        dirichlet=boundary_conditions,
+        forcing_term=forcing_term,
+        u0=u0,
+        exact_solution=ue,
+    )
+
+    rom_params = dict(num_snapshots=10)
+
+    rnd = np.random.RandomState(0)
+    tf, nt = domain["T"], domain["nt"]
+    ts = np.linspace(tf / nt, tf, nt)
+
+    deim_params = {"ts": ts, "num_snapshots": 5}
+
+    hrom = HyperReducedOrderModel(
+        grid=grid,
+        fom_params=fom_params,
+        rom_params=rom_params,
+        deim_params=deim_params,
+        mdeim_params=deim_params,
+        rnd=rnd,
+    )
+
+    hrom.setup()
+    hrom.setup_hyperreduction()
+
+    hrom.run_offline_hyperreduction()
+    hrom.run_offline_rom()
+
+    online_params = dict(num=20, rnd=np.random.RandomState(2))
+    hrom.evaluate_online(params=online_params)
+
+    hrom.generate_summary()
+
+    result = hrom.summary_errors
+    expected = pd.DataFrame(
+        {
+            "mean": {
+                0: 8.807124184789381e-05,
+                1: 0.00012132092122148534,
+                2: 0.00028463644485177196,
+                3: 0.0006767487487654447,
+                4: 0.00014233023390544555,
+                5: 0.00026333377698191303,
+                6: 5.34900253584289e-05,
+                7: 6.81550614978366e-05,
+                8: 0.000252042718195461,
+                9: 0.0003363697129489371,
+                10: 0.0002505793006693687,
+                11: 0.0001724433965770953,
+                12: 2.141060522027912e-05,
+                13: 0.0003331771639110306,
+                14: 0.00014923863773726086,
+                15: 0.0006907584644652322,
+                16: 0.0005094981622827864,
+                17: 0.003554832966891218,
+                18: 1.973376436248429e-05,
+                19: 0.01204110048706372,
+            },
+            "median": {
+                0: 5.442206951341025e-06,
+                1: 1.4519164041908465e-07,
+                2: 2.181758488049534e-05,
+                3: 1.6499537890485305e-05,
+                4: 3.6883965144283754e-05,
+                5: 2.893554040307506e-10,
+                6: 3.007865061136411e-07,
+                7: 4.656174690967966e-05,
+                8: 7.246035231109269e-05,
+                9: 0.00014675213011780221,
+                10: 3.854281480262115e-07,
+                11: 7.627181534842806e-08,
+                12: 2.7990023340002043e-11,
+                13: 1.7091435468539179e-09,
+                14: 2.0569227958942892e-10,
+                15: 9.299198850985781e-07,
+                16: 6.26973010457531e-08,
+                17: 0.0020272190215419195,
+                18: 1.2940198322784453e-06,
+                19: 0.00773069249918343,
+            },
+            "max": {
+                0: 0.0005048646054000295,
+                1: 0.001320404103368796,
+                2: 0.0020374470442840902,
+                3: 0.0058864192582803,
+                4: 0.0007198874040654261,
+                5: 0.005019912367314376,
+                6: 0.0004771765572210609,
+                7: 0.00019777202107224557,
+                8: 0.001249150623993914,
+                9: 0.0012569169540681032,
+                10: 0.002283908299008748,
+                11: 0.0021018586113048473,
+                12: 0.0003637422284794813,
+                13: 0.006159533273626118,
+                14: 0.0022156722491855243,
+                15: 0.007523096548718571,
+                16: 0.007941441149434705,
+                17: 0.011855186676262749,
+                18: 0.00011062208185804066,
+                19: 0.03872120341829028,
+            },
+            "min": {
+                0: 1.1978144362448531e-08,
+                1: 5.317650790677678e-12,
+                2: 1.4820097795947299e-07,
+                3: 2.662144965127215e-08,
+                4: 1.2869087587980672e-06,
+                5: 7.358543107281563e-15,
+                6: 5.855373552635898e-11,
+                7: 8.478755669236747e-06,
+                8: 3.021361302906155e-06,
+                9: 9.85702790352542e-06,
+                10: 7.1536006950371556e-12,
+                11: 9.59962033154823e-13,
+                12: 9.328165487928845e-16,
+                13: 7.666278763502845e-15,
+                14: 1.215448795969909e-14,
+                15: 4.025361010579316e-11,
+                16: 2.035196498973005e-13,
+                17: 0.0002479026719334095,
+                18: 2.728502737677861e-09,
+                19: 0.0013404369974043628,
+            },
+        }
+    )
+
+    assert_frame_equal(expected, result)
+
+    pass
 
 
 def test_convergence_rates_fast(domain, grid_base):
