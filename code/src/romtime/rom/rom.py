@@ -260,7 +260,7 @@ class RomConstructor(Reductor):
 
         timesteps = [0.0]
 
-        g, _, _ = fom.create_lifting_operator(mu=mu, t=0.0, L=fom.domain["L"])
+        g, _, _ = fom.create_lifting_operator(mu=mu, t=0.0, L=fom.domain[fom.L0])
 
         dt = fom.dt
         t = 0.0

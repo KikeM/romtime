@@ -1,18 +1,56 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from functools import wraps
 from itertools import product
 
 import fenics
+import matplotlib.pyplot as plt
 import numpy as np
 from romtime.utils import bilinear_to_csr, function_to_array
 from scipy.sparse import find as get_nonzero_entries
 from tqdm import tqdm
 
 
+def move_mesh(assemble):
+    """Decorator to move forth and back the mesh during
+    the assembly of the operator.
+
+    Parameters
+    ----------
+    assemble : OneDimensionalSolver.assemble-like method
+
+    Returns
+    -------
+    dolfin.cpp.la.Matrix or dolfin.cpp.la.Vector
+    """
+
+    @wraps(assemble)
+    def _move_mesh(self, mu, t, entries=None):
+
+        self.move_mesh(mu, t)
+        operator = assemble(self, mu, t, entries)
+        self.move_mesh(back=True)
+
+        return operator
+
+    return _move_mesh
+
+
 class OneDimensionalSolver(ABC):
 
     DIRICHLET_ENTRY = 1.0
     DIRICHLET_VALUE = 0.0
+
+    NX = "nx"
+    NT = "nt"
+    L0 = "L0"
+    T = "T"
+
+    B0 = "b0"
+    BL = "bL"
+
+    DB0_DT = "db0_dt"
+    DBL_DT = "dbL_dt"
 
     def __init__(
         self,
@@ -21,6 +59,8 @@ class OneDimensionalSolver(ABC):
         parameters=None,
         forcing_term=None,
         u0=None,
+        Lt=None,
+        dLt_dt=None,
         filename=None,
         poly_type=None,
         degrees=None,
@@ -36,18 +76,21 @@ class OneDimensionalSolver(ABC):
         self.mu = parameters.copy() if parameters else None
         self.forcing_term = forcing_term
         self.u0 = u0
+        self.Lt = Lt
+        self.dLt_dt = dLt_dt
 
         self.poly_type = poly_type
         self.degrees = degrees
 
         self.project_u0 = project_u0
 
+        self._scale = None  # Private variable to be used by the moving mesh method
+
         # Structures to collect information about the exact solution
         self.exact_solution = exact_solution
         self.exact = None
 
         # FEM structures
-        self.x = None  # Node distribution
         self.timesteps = None
         self.algebraic_solver = None
 
@@ -63,6 +106,26 @@ class OneDimensionalSolver(ABC):
         self.liftings = None
 
         self.is_setup = False
+
+    @property
+    def x(self):
+        """DOF coordinates distribution.
+
+        Returns
+        -------
+        x : np.array
+        """
+        return self.V.tabulate_dof_coordinates()
+
+    @property
+    def L(self):
+        """Domain length.
+
+        Returns
+        -------
+        L : float
+        """
+        return np.max(self.x)
 
     def build_cell_to_dofs(self):
         """Create mapping between mesh cells and dofs."""
@@ -98,6 +161,42 @@ class OneDimensionalSolver(ABC):
 
         self.dof_to_cells = dof_to_cells
 
+    def _move_mesh(self, scale=None, back=False):
+        """Move mesh according to scale factor.
+
+        Parameters
+        ----------
+        scale : float, optional
+            Coefficient by which we should scale the Interval, by default None
+        back : bool, optional
+            Rescale the mesh back to the original size, by default False
+        """
+
+        if back == True:
+            self.mesh.scale(1.0 / self._scale)
+        elif back == False:
+            self.mesh.scale(scale)
+            self._scale = scale
+
+    def move_mesh(self, mu=None, t=None, back=False):
+        """Move mesh according to Lt(mu, t).
+
+        Parameters
+        ----------
+        mu : dict, optional if back is True
+        t : float, optional if back is True
+        back : bool, optional
+            Rescale the mesh back to the original size, by default False
+        """
+
+        # If we need to move the mesh back
+        if back == True:
+            return self._move_mesh(back=back)
+
+        L_t = self.Lt(t=t, **mu)
+
+        self._move_mesh(scale=L_t)
+
     def setup(self):
         """Create FEM structures.
 
@@ -107,9 +206,9 @@ class OneDimensionalSolver(ABC):
         - Algebraic Solver
         """
 
-        L = self.domain["L"].values().item()
+        L0 = self.domain[self.L0]
 
-        mesh = fenics.IntervalMesh(self.domain["nx"], 0.0, L)
+        mesh = fenics.IntervalMesh(self.domain[self.NX], 0.0, L0)
         V = fenics.FunctionSpace(mesh, self.poly_type, self.degrees)
         dofmap = V.dofmap()
 
@@ -122,7 +221,6 @@ class OneDimensionalSolver(ABC):
         self.dofmap = dofmap
         self.u = u
         self.v = v
-        self.x = V.tabulate_dof_coordinates()
 
         # Create mappings for (M)DEIM
         self.build_cell_to_dofs()
@@ -188,15 +286,14 @@ class OneDimensionalSolver(ABC):
 
         return solver
 
-    def create_lifting_operator(self, mu, t, L):
+    def create_lifting_operator(self, mu, t, L, only_g=False):
         """Create lifting function for the boundary conditions.
 
         Parameters
         ----------
-        b0 : fenics.Expression
-            Function value at x = 0.
-        bL : fenics.Expression
-            Function value at x = L(t).
+        mu : dict
+        t : float
+        L : float
 
         Returns
         -------
@@ -207,32 +304,57 @@ class OneDimensionalSolver(ABC):
 
         dirichlet = self.dirichlet
 
-        b0 = dirichlet["b0"]
-        bL = dirichlet["bL"]
+        b0 = dirichlet[self.B0]
+        bL = dirichlet[self.BL]
 
-        db0_dt = dirichlet["db0_dt"]
-        dbL_dt = dirichlet["dbL_dt"]
+        db0_dt = dirichlet[self.DB0_DT]
+        dbL_dt = dirichlet[self.DBL_DT]
 
         g = self._compute_linear_interpolation(left=b0, right=bL, mu=mu, t=t, L=L)
-        dg_dt = self._compute_linear_interpolation(
-            left=db0_dt, right=dbL_dt, mu=mu, t=t, L=L
-        )
+
+        if only_g:
+            return g
+
+        # Compute moving boundary effect
+        if self.dLt_dt:
+
+            L0 = self.domain[self.L0]
+
+            dLt_dt = self.dLt_dt(t=t, **mu)
+            dLt_dt *= L0
+            dg_dt = self._compute_linear_interpolation(
+                left=db0_dt, right=dbL_dt, mu=mu, t=t, L=L, dLt_dt=dLt_dt
+            )
+
+            moving_boundary = self._compute_moving_boundary_effect(
+                left=b0, right=bL, mu=mu, t=t, L=L, dLt_dt=dLt_dt
+            )
+
+            dg_dt += moving_boundary
+        else:
+            dg_dt = self._compute_linear_interpolation(
+                left=db0_dt, right=dbL_dt, mu=mu, t=t, L=L, dLt_dt=0.0
+            )
+
         grad_g = self._create_lifting_gradient_expression(
-            left=b0, right=bL, mu=mu, t=t, L=L
+            left=b0,
+            right=bL,
+            mu=mu,
+            t=t,
+            L=L,
         )
 
         return g, dg_dt, grad_g
 
     @staticmethod
-    def _compute_linear_interpolation(left, right, mu, t, L):
+    def _compute_linear_interpolation(left, right, mu, t, L, dLt_dt=0.0):
         """Compute linear interpolation for a one-dimensional mesh.
 
         Parameters
         ----------
         left : fenics.Expression
         right : fenics.Expression
-        L : [type]
-            [description]
+        L : float
 
         Returns
         -------
@@ -241,9 +363,39 @@ class OneDimensionalSolver(ABC):
         """
 
         f = fenics.Expression(
-            f"{right} * (x[0] / L) + {left} * (L - x[0]) / L",
+            f"({right}) * (x[0] / L) + ({left}) * (L - x[0]) / L",
             degree=2,
             L=L,
+            dLt_dt=dLt_dt,
+            t=t,
+            **mu,
+        )
+
+        return f
+
+    @staticmethod
+    def _compute_moving_boundary_effect(left, right, mu, t, L, dLt_dt):
+        """Compute the moving boundary effect for the linear interpolation function
+        in a one-dimensional mesh.
+
+        Parameters
+        ----------
+        left : fenics.Expression
+        right : fenics.Expression
+        L : float
+        dL_dt : float
+
+        Returns
+        -------
+        f : fenics.Expression
+            Linear interpolation of boundary values (left/right).
+        """
+
+        f = fenics.Expression(
+            f"({left} - {right}) * (x[0] / L) * (dLt_dt / L)",
+            degree=2,
+            L=L,
+            dLt_dt=dLt_dt,
             t=t,
             **mu,
         )
@@ -324,7 +476,7 @@ class OneDimensionalSolver(ABC):
         return operator
 
     def assemble_local(self, form, entries):
-        """Assemble a weak form for some specific local entries.
+        """Assemble weak form for specific entries.
 
         Parameters
         ----------
@@ -490,22 +642,19 @@ class OneDimensionalSolver(ABC):
         uh = fenics.Function(V)
         uc_h = fenics.Function(V)  # uc = hmgns + lift
 
+        t = 0.0
+        mu = self.mu
+
         # Obtain initial solution in the mesh
         u0 = self.u0
         if self.project_u0:
             u_n = fenics.project(u0, V)
         else:
-            u_n = fenics.interpolate(u0, V)
+            u_n = self.interpolate_func(u0, V, mu=mu, t=t)
 
         # Time domain step size
-        dt = self.domain["T"] / self.domain["nt"]
+        dt = self.domain[self.T] / self.domain[self.NT]
         self.dt = dt
-
-        # Time step discretization
-        prev = self.define_bdf1_forcing(u_n=u_n)
-
-        # Homogeneous boundary conditions
-        bc = self.define_homogeneous_dirichlet_bc()
 
         # Prepare iteration
         snapshots = dict()
@@ -513,36 +662,40 @@ class OneDimensionalSolver(ABC):
         liftings = dict()
 
         timesteps = [0.0]
+        domain_x = []
         solver = self.algebraic_solver
-        mu = self.mu
 
-        #######################################################################
+        # --------------------------------------------------------------------
         # Prepare structures to contrast with exact solution
-        #######################################################################
+        # --------------------------------------------------------------------
         if self.exact_solution is not None:
-            ue = fenics.Expression(self.exact_solution, degree=2, t=0.0, **mu)
+            ue = fenics.Expression(self.exact_solution, degree=2, t=t, **mu)
             errors = dict()
             exact = dict()
         else:
             ue = None
 
-        #  Prepare lifting function
-        g, _, _ = self.create_lifting_operator(mu=mu, t=0.0, L=self.domain["L"])
-
-        t = 0.0
-        for timestep in tqdm(
-            range(self.domain["nt"]), desc="(FOM) Time integration", leave=False
-        ):
+        ts = range(self.domain["nt"])
+        for timestep in tqdm(ts, desc="(FOM) Time integration", leave=False):
 
             # Update time
             t += dt
-            g.t = t
+
+            # Prepare lifting function
+            if self.Lt:
+                self.move_mesh(mu=mu, t=t)
+                g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
+
+                domain_x.append(self.x)
+                self.move_mesh(back=True)
+            else:
+                g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
 
             timesteps.append(t)
 
-            ###################################################################
+            # -----------------------------------------------------------------
             # Assemble algebraic problem
-            ###################################################################
+            # -----------------------------------------------------------------
             # LHS
             Mh_mat = self.assemble_mass(mu=mu, t=t)
             Ah_mat = self.assemble_stiffness(mu=mu, t=t)
@@ -552,12 +705,12 @@ class OneDimensionalSolver(ABC):
             fh_vec = self.assemble_forcing(mu=mu, t=t)
             fgh_vec = self.assemble_lifting(mu=mu, t=t)
 
-            bdf_1 = self.assemble_operator(prev, bc)
+            bdf_1 = Mh_mat * u_n.vector()
             bh_vec = bdf_1 + dt * (fh_vec + fgh_vec)
 
-            ###################################################################
+            # -----------------------------------------------------------------
             # Solve problem
-            ###################################################################
+            # -----------------------------------------------------------------
             U = uh.vector()
             solver.solve(Kh_mat, U, bh_vec)
 
@@ -565,22 +718,22 @@ class OneDimensionalSolver(ABC):
             u_n.assign(uh)
 
             # Interpolate lifting and add to build actual solution
-            gh = fenics.interpolate(g, V)
+            gh = self.interpolate_func(g, V, mu=mu, t=t)
             uc_h.assign(uh + gh)
 
-            ###################################################################
+            # -----------------------------------------------------------------
             # Collect solutions
-            ###################################################################
+            # -----------------------------------------------------------------
             snapshots[t] = uh.copy(deepcopy=True)
             solutions[t] = uc_h.copy(deepcopy=True)
             liftings[t] = gh.copy(deepcopy=True)
 
-            ###################################################################
+            # -----------------------------------------------------------------
             # Compute error with exact solution
-            ###################################################################
+            # -----------------------------------------------------------------
             if ue is not None:
                 ue.t = t
-                ue_h = fenics.interpolate(ue, V)
+                ue_h = self.interpolate_func(ue, V, mu=mu, t=t)
                 exact[t] = ue_h.copy(deepcopy=True)
 
                 error = self._compute_error(u=uc_h, ue=ue_h)
@@ -593,13 +746,38 @@ class OneDimensionalSolver(ABC):
         self.snapshots = snapshots
 
         # Collect snapshots as actual arrays
-        self._snapshots = np.array(
-            [function_to_array(element) for element in list(snapshots.values())]
-        ).T
+        self._snapshots = self.dict_to_array(snapshots)
+        self._solutions = self.dict_to_array(solutions)
+        self._exact = self.dict_to_array(exact)
+
+        self.domain_x = np.hstack(domain_x)
 
         if ue is not None:
             self.errors = errors
             self.exact = exact
+
+    @staticmethod
+    def dict_to_array(my_dict):
+        return np.array(
+            [function_to_array(element) for element in list(my_dict.values())]
+        ).T
+
+    def interpolate_func(self, g, V, mu=None, t=None):
+        """Interpolate function in the V space.
+
+        Parameters
+        ----------
+        g : dolfin.function.function.Function
+        V : FunctionSpace
+        mu : dict, optional
+        t : float, optional
+
+        Returns
+        -------
+        gh : dolfin.function.function.Function
+        """
+        gh = fenics.interpolate(g, V)
+        return gh
 
     def define_homogeneous_dirichlet_bc(self):
         """Define homogeneous boundary conditions.
