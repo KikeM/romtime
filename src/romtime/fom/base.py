@@ -750,7 +750,10 @@ class OneDimensionalSolver(ABC):
         self._solutions = self.dict_to_array(solutions)
         self._exact = self.dict_to_array(exact)
 
-        self.domain_x = np.hstack(domain_x)
+        if self.Lt:
+            self.domain_x = np.hstack(domain_x)
+        else:
+            self.domain_x = self.x
 
         if ue is not None:
             self.errors = errors
