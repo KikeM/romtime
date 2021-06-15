@@ -16,10 +16,12 @@ from romtime.deim import (
 )
 from romtime.fom import HeatEquationMovingSolver, HeatEquationSolver
 from romtime.parameters import get_uniform_dist, round_parameters
-from romtime.problems.mfp1 import HyperReducedOrderModel, define_mfp1_problem
+from romtime.problems.mfp1 import HyperReducedOrderModelFixed, define_mfp1_problem
 from romtime.rom import RomConstructor
 from romtime.utils import function_to_array, plot
 from sklearn.model_selection import ParameterSampler
+
+from romtime.conventions import OperatorType, RomParameters, Stage
 
 fenics.set_log_level(50)
 
@@ -85,9 +87,8 @@ def parameters():
     delta = 1.0
     beta = 5.0
     alpha_0 = 1.0
-    epsilon = 0.0
 
-    return delta, beta, alpha_0, epsilon
+    return delta, beta, alpha_0
 
 
 @pytest.fixture
@@ -97,7 +98,6 @@ def grid():
         "delta": get_uniform_dist(min=0.01, max=2.0),
         "beta": get_uniform_dist(min=1.0, max=10.0),
         "alpha_0": get_uniform_dist(min=0.01, max=2.0),
-        "epsilon": [0.0],
     }
 
     return _grid
@@ -106,9 +106,9 @@ def grid():
 @pytest.fixture
 def grid_base(parameters):
 
-    delta, beta, alpha_0, epsilon = parameters
+    delta, beta, alpha_0 = parameters
 
-    _grid = dict(delta=delta, beta=beta, alpha_0=alpha_0, epsilon=epsilon)
+    _grid = dict(delta=delta, beta=beta, alpha_0=alpha_0)
 
     return _grid
 
@@ -360,9 +360,9 @@ def test_snapshot_generation(domain, parameters, grid_base, grid):
 
     expected = pd.Series(
         {
-            "{'alpha_0': 1.1, 'beta': 7.44, 'delta': 1.21, 'epsilon': 0.0}": -5.52706214715911,
-            "{'alpha_0': 1.09, 'beta': 4.81, 'delta': 1.3, 'epsilon': 0.0}": -5.451463640761813,
-            "{'alpha_0': 0.88, 'beta': 9.03, 'delta': 1.93, 'epsilon': 0.0}": -4.431683790164045,
+            "{'alpha_0': 1.1, 'beta': 7.44, 'delta': 1.21}": -5.52706214715911,
+            "{'alpha_0': 1.09, 'beta': 4.81, 'delta': 1.3}": -5.451463640761813,
+            "{'alpha_0': 0.88, 'beta': 9.03, 'delta': 1.93}": -4.431683790164045,
         },
         name=10.0,
     )
@@ -379,7 +379,6 @@ def test_rom(domain, grid_base, grid):
 
     # Run loop
     nt = 100
-    errors = []
     nt = int(nt)
 
     tf = 10.0
@@ -399,7 +398,7 @@ def test_rom(domain, grid_base, grid):
 
     for mu in sampler:
         mu = round_parameters(sample=mu, num=3)
-        rom.solve(mu=mu, step=rom.ONLINE)
+        rom.solve(mu=mu, step=Stage.ONLINE)
 
     result = pd.DataFrame(rom.errors)
     expected = pd.read_csv(PATH_FIXED / "errors-rom.csv", index_col=0)
@@ -451,7 +450,7 @@ def test_rom_deim(domain, grid_base, grid):
     # Offline phase
     rom.setup(rnd=rnd)
     rom.build_reduced_basis(num_snapshots=10)
-    rom.add_hyper_reductor(reductor=deim_rhs, which=rom.RHS)
+    rom.add_hyper_reductor(reductor=deim_rhs, which=OperatorType.RHS)
     rom.project_reductors()
 
     ###########################################################################
@@ -461,7 +460,7 @@ def test_rom_deim(domain, grid_base, grid):
     sampler = rom.build_sampling_space(num=10, rnd=rnd2)
 
     for mu in sampler:
-        rom.solve(mu=mu, step=rom.ONLINE)
+        rom.solve(mu=mu, step=Stage.ONLINE)
 
     result = pd.DataFrame(rom.errors)
 
@@ -537,9 +536,9 @@ def test_rom_deim_mdeim(domain, grid_base, grid):
     hrom.build_reduced_basis(num_snapshots=10)
 
     # Include the reduction for the algebraic operators
-    hrom.add_hyper_reductor(reductor=deim_rhs, which=hrom.RHS)
-    hrom.add_hyper_reductor(reductor=mdeim_stiffness, which=hrom.STIFFNESS)
-    hrom.add_hyper_reductor(reductor=mdeim_mass, which=hrom.MASS)
+    hrom.add_hyper_reductor(reductor=deim_rhs, which=OperatorType.RHS)
+    hrom.add_hyper_reductor(reductor=mdeim_stiffness, which=OperatorType.STIFFNESS)
+    hrom.add_hyper_reductor(reductor=mdeim_mass, which=OperatorType.MASS)
 
     # Project the operators
     hrom.project_reductors()
@@ -551,7 +550,7 @@ def test_rom_deim_mdeim(domain, grid_base, grid):
     sampler = hrom.build_sampling_space(num=10, rnd=rnd2)
 
     for mu in sampler:
-        hrom.solve(mu=mu, step=hrom.ONLINE)
+        hrom.solve(mu=mu, step=Stage.ONLINE)
 
     result = pd.DataFrame(hrom.errors)
 
@@ -588,9 +587,13 @@ def test_hrom(grid):
     tf, nt = domain["T"], domain["nt"]
     ts = np.linspace(tf / nt, tf, nt)
 
-    deim_params = {"ts": ts, "num_snapshots": 5}
+    deim_params = {
+        "ts": ts,
+        RomParameters.NUM_SNAPSHOTS: 5,
+        RomParameters.NUM_ONLINE: 10,
+    }
 
-    hrom = HyperReducedOrderModel(
+    hrom = HyperReducedOrderModelFixed(
         grid=grid,
         fom_params=fom_params,
         rom_params=rom_params,

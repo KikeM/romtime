@@ -94,7 +94,6 @@ def csr_to_vector(matrix):
     Parameters
     ----------
     matrix : dolfin.cpp.la.matrix
-        [description]
 
     Returns
     -------
@@ -118,6 +117,24 @@ def vector_to_csr(entries, rows, cols):
 
     Returns
     -------
-    csr_matrix
+    scipy.sparse.csr_matrix
     """
     return csr_matrix((entries, (rows, cols)))
+
+
+def eliminate_zeros(Ah):
+    """Eliminate zeroes from CSR matrix.
+
+    Parameters
+    ----------
+    Ah : scipy.sparse.csr_matrix
+
+    Returns
+    -------
+    Ah : scipy.sparse.csr_matrix
+    """
+    mask = np.isclose(Ah.data, 0.0, rtol=1e-16, atol=1e-16)
+    Ah.data[mask] = 0.0
+    Ah.eliminate_zeros()
+
+    return Ah

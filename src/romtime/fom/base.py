@@ -6,7 +6,9 @@ from itertools import product
 import fenics
 import matplotlib.pyplot as plt
 import numpy as np
-from romtime.utils import bilinear_to_csr, function_to_array
+from adjustText import adjust_text
+from romtime.conventions import FIG_KWARGS
+from romtime.utils import bilinear_to_csr, eliminate_zeros, function_to_array
 from scipy.sparse import find as get_nonzero_entries
 from tqdm import tqdm
 
@@ -107,6 +109,39 @@ class OneDimensionalSolver(ABC):
 
         self.is_setup = False
 
+    def __del__(self):
+
+        del self.filename
+        del self.file
+        del self.domain
+        del self.dirichlet
+        del self.mu
+        del self.forcing_term
+        del self.u0
+        del self.Lt
+        del self.dLt_dt
+        del self.poly_type
+        del self.degrees
+        del self.project_u0
+        del self._scale
+
+        # Structures to collect information about the exact solution
+        del self.exact_solution
+        del self.exact
+        # FEM structures
+        del self.timesteps
+        del self.algebraic_solver
+        # Mappings for local integration
+        del self.cell_to_dofs
+        del self.dof_to_cells
+        del self.entries_dirichlet
+        del self.dofs_dirichlet
+        # Snapshots Collection
+        del self.solutions
+        del self.snapshots
+        del self.liftings
+        del self.is_setup
+
     @property
     def x(self):
         """DOF coordinates distribution.
@@ -194,7 +229,6 @@ class OneDimensionalSolver(ABC):
             return self._move_mesh(back=back)
 
         L_t = self.Lt(t=t, **mu)
-
         self._move_mesh(scale=L_t)
 
     def setup(self):
@@ -234,6 +268,29 @@ class OneDimensionalSolver(ABC):
 
         self.is_setup = True
 
+    def assemble_stiffness_topology(self):
+        """Assemble stiffness matrix for a ALE problem.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        entries : list
+        """
+
+        # ---------------------------------------------------------------------
+        # Weak Formulation
+        # ---------------------------------------------------------------------
+        dot, dx, grad = fenics.dot, fenics.dx, fenics.grad
+        u, v = self.u, self.v
+
+        Ah = -u.dx(0) * v * dx + dot(grad(u), grad(v)) * dx
+
+        bc = self.define_homogeneous_dirichlet_bc()
+        Ah_mat = self.assemble_operator(Ah, bc)
+
+        return Ah_mat
+
     def find_dirichlet_entries(self):
         """Find Dirichlet BCs entries in matrices and vectors.
 
@@ -242,11 +299,14 @@ class OneDimensionalSolver(ABC):
 
         # Assemble the mass matrix
         Mh = OneDimensionalSolver.assemble_mass(self)
-        Mh = bilinear_to_csr(Mh)
-        Mh.eliminate_zeros()
+        Ah = self.assemble_stiffness_topology()
+
+        Kh = (Mh + Ah) / 2
+        Kh = bilinear_to_csr(Kh)
+        Kh = eliminate_zeros(Kh)
 
         # Find the values equal to one
-        rows, cols, values = get_nonzero_entries(Mh)
+        rows, cols, values = get_nonzero_entries(Kh)
         mask_ones = np.isclose(values, self.DIRICHLET_ENTRY)
         dirichlet_dofs = [(dof,) for dof in rows[mask_ones]]
         dirichlet_entries = list(
@@ -409,49 +469,6 @@ class OneDimensionalSolver(ABC):
 
         return f
 
-    def define_bdf1_forcing(self, u_n):
-        """Define Backwards Difference Order 1 forcing terms.
-
-        Parameters
-        ----------
-        u_n : fenics.Function
-            Previous timestep.
-
-        Returns
-        -------
-        term : ufl.form.Form
-        """
-
-        # Extract names to have a clean implementation
-        dx = fenics.dx
-        v = self.v
-
-        term = u_n * v * dx
-
-        return term
-
-    def define_bdf2_forcing(self, u_n, u_n1):
-        """Define Backwards Difference Order 2 forcing terms.
-
-        Parameters
-        ----------
-        u_n : fenics.Function
-            Previous timestep, u^{n}.
-
-        u_n1 : fenics.Function
-            Second previous timestep, u^{n-1}.
-
-        Returns
-        -------
-        term : ufl.form.Form
-        """
-
-        # Extract names to have a clean implementation
-        dx = fenics.dx
-        v = self.v
-
-        raise NotImplementedError("BDF-2 method to be implemented.")
-
     @staticmethod
     def assemble_operator(weak, bcs):
         """Assemble weak form into algebraic operator
@@ -579,7 +596,19 @@ class OneDimensionalSolver(ABC):
         return cells_to_cover
 
     @abstractmethod
-    def assemble_stiffness(self, mu, t, entries=None):
+    def assemble_stiffness(self, mu=None, t=None, entries=None):
+        """Assemble stiffness matrix terms.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        entries : list, optional
+            Local integration, by default None
+        """
+        pass
+
+    def assemble_convection(self, mu=None, t=None, entries=None):
         """Assemble stiffness matrix terms.
 
         Parameters
@@ -659,7 +688,6 @@ class OneDimensionalSolver(ABC):
         # Prepare iteration
         snapshots = dict()
         solutions = dict()
-        liftings = dict()
 
         timesteps = [0.0]
         domain_x = []
@@ -681,32 +709,16 @@ class OneDimensionalSolver(ABC):
             # Update time
             t += dt
 
-            # Prepare lifting function
-            if self.Lt:
-                self.move_mesh(mu=mu, t=t)
-                g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
-
-                domain_x.append(self.x)
-                self.move_mesh(back=True)
-            else:
-                g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
-
             timesteps.append(t)
 
             # -----------------------------------------------------------------
             # Assemble algebraic problem
             # -----------------------------------------------------------------
             # LHS
-            Mh_mat = self.assemble_mass(mu=mu, t=t)
-            Ah_mat = self.assemble_stiffness(mu=mu, t=t)
-            Kh_mat = Mh_mat + dt * Ah_mat
+            Mh_mat, Kh_mat = self.assemble_system(mu, t)
 
             # RHS
-            fh_vec = self.assemble_forcing(mu=mu, t=t)
-            fgh_vec = self.assemble_lifting(mu=mu, t=t)
-
-            bdf_1 = Mh_mat * u_n.vector()
-            bh_vec = bdf_1 + dt * (fh_vec + fgh_vec)
+            bh_vec = self.assemble_system_rhs(mu, t, u_n, Mh_mat)
 
             # -----------------------------------------------------------------
             # Solve problem
@@ -717,6 +729,16 @@ class OneDimensionalSolver(ABC):
             # Update solution
             u_n.assign(uh)
 
+            # Prepare lifting function
+            if self.Lt:
+                self.move_mesh(mu=mu, t=t)
+                g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
+
+                domain_x.append(self.x)
+                self.move_mesh(back=True)
+            else:
+                g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
+
             # Interpolate lifting and add to build actual solution
             gh = self.interpolate_func(g, V, mu=mu, t=t)
             uc_h.assign(uh + gh)
@@ -726,7 +748,6 @@ class OneDimensionalSolver(ABC):
             # -----------------------------------------------------------------
             snapshots[t] = uh.copy(deepcopy=True)
             solutions[t] = uc_h.copy(deepcopy=True)
-            liftings[t] = gh.copy(deepcopy=True)
 
             # -----------------------------------------------------------------
             # Compute error with exact solution
@@ -742,7 +763,6 @@ class OneDimensionalSolver(ABC):
         # Save results
         self.timesteps = timesteps
         self.solutions = solutions
-        self.liftings = liftings
         self.snapshots = snapshots
 
         # Collect snapshots as actual arrays
@@ -758,6 +778,14 @@ class OneDimensionalSolver(ABC):
         if ue is not None:
             self.errors = errors
             self.exact = exact
+
+    @abstractmethod
+    def assemble_system_rhs(self, mu, t, u_n, Mh_mat):
+        pass
+
+    @abstractmethod
+    def assemble_system(self, mu, t):
+        pass
 
     @staticmethod
     def dict_to_array(my_dict):
@@ -840,3 +868,99 @@ class OneDimensionalSolver(ABC):
             )
 
         return error
+
+    def plot_solution(self, pics=6, save=None):
+        """Plot solution in space and time.
+
+        Parameters
+        ----------
+        pics : int, optional
+            Number of snapshots to show, by default 6
+        """
+
+        plt.figure()
+
+        num = len(self.timesteps) // pics
+
+        texts = []
+        for t in range(0, self.domain_x.shape[1], num):
+
+            x = self.domain_x[:, t]
+            y = self._solutions[:, t]
+            plt.plot(x, y, c="b")
+
+            _t = self.timesteps[t]
+            _t = np.round(_t, 1)
+            # texts.append(plt.text(x=1.1 * max(x), y=max(y), s=f"$t={_t}$"))
+
+        adjust_text(texts)
+        plt.grid()
+        plt.xlabel("$x$")
+        plt.ylabel("$u(x,t)$")
+        plt.title("Solution")
+
+        if save:
+            plt.savefig(save, **FIG_KWARGS)
+        else:
+            plt.show()
+
+    def plot_errors(self, save=None, log=False, new=True, label=None):
+        """Plot errors in time.
+
+        Parameters
+        ----------
+        pics : int, optional
+            Number of snapshots to show, by default 6
+        """
+
+        if new:
+            plt.figure()
+
+        errors = np.array(list(self.errors.values()))
+        if log:
+            errors = np.log10(errors)
+        plt.plot(self.timesteps[1:], errors, label=label)
+
+        plt.grid()
+        plt.xlabel("$t$")
+        plt.ylabel("L2 norm")
+        plt.title("Errors")
+
+        if save:
+            plt.savefig(save, **FIG_KWARGS)
+        # else:
+        #     plt.show()
+
+    def plot_snapshots(self, pics=6, save=None):
+        """Plot solution in space and time.
+
+        Parameters
+        ----------
+        pics : int, optional
+            Number of snapshots to show, by default 6
+        """
+
+        plt.figure()
+
+        num = len(self.timesteps) // pics
+
+        texts = []
+        for t in range(0, self.domain_x.shape[1], num):
+
+            x = self.domain_x[:, t]
+            y = self._snapshots[:, t]
+            plt.plot(x, y, c="b")
+
+            _t = self.timesteps[t]
+            _t = np.round(_t, 1)
+            # texts.append(plt.text(x=1.1 * max(x), y=max(y), s=f"$t={_t}$"))
+
+        adjust_text(texts)
+        plt.grid()
+        plt.xlabel("$x$")
+        plt.ylabel("$\hat{u}(x,t)$")
+        plt.title("Snapshots")
+        if save:
+            plt.savefig(save, **FIG_KWARGS)
+        else:
+            plt.show()

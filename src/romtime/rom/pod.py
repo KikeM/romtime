@@ -35,14 +35,22 @@ def orth(snapshots, num=None, tol=None, orthogonalize=True):
         _snapshots = snapshots
 
     # SVD compression
-    u, s, _ = svd(_snapshots, full_matrices=False)
+    u, s, _ = svd(_snapshots, full_matrices=False, lapack_driver="gesvd")
 
-    # Clean noisy basis vectors
-    u = u[:, s > DROP_TOLERANCE]
+    # Compute system energy
+    eigenvalues = np.power(s, 2)
+    total = np.sum(eigenvalues)
+    energy = np.cumsum(eigenvalues) / total
 
-    if num:
+    # Tolerance in the energy ratio
+    if tol:
+        mask = energy < tol
+        Q = u[:, mask]
+    # Number of elements to retain
+    elif num:
         Q = u[:, :num]
+    # Clean noisy basis vectors
     else:
-        Q = u
+        Q = u[:, s > DROP_TOLERANCE]
 
-    return Q, s
+    return Q, s, energy

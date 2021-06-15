@@ -39,7 +39,7 @@ class HeatEquationSolver(OneDimensionalSolver):
         # FEM structures
         self.alpha = None  # Nonlinear diffusion coefficient
 
-    def create_diffusion_coefficient(self, mu):
+    def create_diffusion_coefficient(self, mu=None):
         """Create non-linear diffusion term.
 
         \\alpha(x) = \\alpha_0 (1 + \\varepsilon x^2)
@@ -50,16 +50,32 @@ class HeatEquationSolver(OneDimensionalSolver):
         """
 
         alpha_0 = mu["alpha_0"]
-        epsilon = mu["epsilon"]
-
-        alpha = fenics.Expression(
-            "alpha_0 * (1.0 + epsilon * x[0] * x[0])",
-            degree=2,
-            alpha_0=alpha_0,
-            epsilon=epsilon,
-        )
+        alpha = fenics.Expression("alpha_0", degree=1, alpha_0=alpha_0)
 
         return alpha
+
+    def assemble_system_rhs(self, mu, t, u_n, Mh_mat):
+
+        fh_vec = self.assemble_forcing(mu=mu, t=t)
+        fgh_vec = self.assemble_lifting(mu=mu, t=t)
+
+        bdf_1 = Mh_mat * u_n.vector()
+
+        dt = self.dt
+        bh_vec = bdf_1 + dt * (fh_vec + fgh_vec)
+
+        return bh_vec
+
+    def assemble_system(self, mu, t):
+
+        Mh_mat = self.assemble_mass(mu=mu, t=t)
+        Ah_mat = self.assemble_stiffness(mu=mu, t=t)
+
+        dt = self.dt
+
+        Kh_mat = Mh_mat + dt * Ah_mat
+
+        return Mh_mat, Kh_mat
 
     def assemble_stiffness(self, mu, t, entries=None):
 
@@ -232,44 +248,56 @@ class HeatEquationMovingSolver(HeatEquationSolver):
 
         return w
 
+    def assemble_system(self, mu, t):
+
+        Mh_mat = self.assemble_mass(mu=mu, t=t)
+        Ah_mat = self.assemble_stiffness(mu=mu, t=t)
+        Ch_mat = self.assemble_convection(mu=mu, t=t)
+
+        dt = self.dt
+
+        Kh_mat = Mh_mat + dt * (Ch_mat + Ah_mat)
+
+        return Mh_mat, Kh_mat
+
     @move_mesh
-    def assemble_mass(self, mu, t, entries):
+    def assemble_mass(self, mu, t, entries=None):
         return super().assemble_mass(mu=mu, t=t, entries=entries)
 
     @move_mesh
-    def assemble_stiffness(self, mu, t, entries=None):
+    def assemble_convection(self, mu, t, entries=None):
 
         # ---------------------------------------------------------------------
         # Weak Formulation
         # ---------------------------------------------------------------------
-        dot, dx, grad = fenics.dot, fenics.dx, fenics.grad
-        u, v = self.u, self.v
+        u, v, dx = self.u, self.v, fenics.dx
 
         w = self.compute_mesh_velocity(mu=mu, t=t)
-        alpha = self.create_diffusion_coefficient(mu)
 
-        Ah = (
-            -w * dot(grad(u), fenics.as_vector((v,))) + alpha * dot(grad(u), grad(v))
-        ) * dx
+        Ch = -w * u.dx(0) * v * dx
 
         if entries:
-            Ah_mat = self.assemble_local(form=Ah, entries=entries)
+            Ch_mat = self.assemble_local(form=Ch, entries=entries)
         else:
             bc = self.define_homogeneous_dirichlet_bc()
-            Ah_mat = self.assemble_operator(Ah, bc)
+            Ch_mat = self.assemble_operator(Ch, bc)
 
-        return Ah_mat
+        return Ch_mat
 
     @move_mesh
-    def assemble_forcing(self, mu, t, entries):
+    def assemble_stiffness(self, mu, t, entries=None):
+        return super().assemble_stiffness(mu=mu, t=t, entries=entries)
+
+    @move_mesh
+    def assemble_forcing(self, mu, t, entries=None):
         return super().assemble_forcing(mu, t, entries=entries)
 
     @move_mesh
-    def assemble_lifting(self, mu, t, entries):
+    def assemble_lifting(self, mu, t, entries=None):
         return super().assemble_lifting(mu, t, entries=entries)
 
     # The RHS does not need this decorator,
     # it calls assemble_forcing and assemble_lifting, which are decorated.
     # We would be moving twice the mesh!
-    def assemble_rhs(self, mu, t, entries):
+    def assemble_rhs(self, mu, t, entries=None):
         return super().assemble_rhs(mu, t, entries=entries)
