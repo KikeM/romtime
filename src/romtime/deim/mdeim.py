@@ -1,6 +1,7 @@
 import numpy as np
 from romtime.utils import (
     bilinear_to_csr,
+    eliminate_zeros,
     get_nonzero_entries,
     project_csr,
     vector_to_csr,
@@ -19,8 +20,6 @@ class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
         name=None,
         grid=None,
         tree_walk_params=None,
-        basis=None,
-        snapshots=None,
     ):
         """Matrix Discrete Empirical Interpolation Operator.
 
@@ -52,11 +51,9 @@ class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
 
         super().__init__(
             assemble=assemble,
-            snapshots=snapshots,
             name=name,
             grid=grid,
             tree_walk_params=tree_walk_params,
-            basis=basis,
         )
 
         # Matrix topology
@@ -181,7 +178,7 @@ class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
         """
 
         Ah = self._assemble_matrix(mu, t)
-        Ah.eliminate_zeros()
+        Ah = eliminate_zeros(Ah)
 
         return Ah.data
 

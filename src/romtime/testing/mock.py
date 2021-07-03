@@ -21,6 +21,12 @@ class MockSolver(OneDimensionalSolver):
             Lt=Lt,
         )
 
+    def assemble_system(self, mu, t):
+        pass
+
+    def assemble_system_rhs(self, mu, t):
+        pass
+
     def create_diffusion_coefficient(self, mu, t):
         """Create non-linear diffusion term.
 
@@ -32,13 +38,11 @@ class MockSolver(OneDimensionalSolver):
         """
 
         alpha_0 = mu["alpha_0"]
-        epsilon = mu["epsilon"]
 
         alpha = fenics.Expression(
-            "alpha_0 * (1.0 + epsilon * x[0] * x[0]) * (1.0 + t*t)",
+            "alpha_0 * (1.0 + t*t)",
             degree=2,
             alpha_0=alpha_0,
-            epsilon=epsilon,
             t=t,
         )
 

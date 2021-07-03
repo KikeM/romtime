@@ -4,6 +4,7 @@ import fenics
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
+from romtime.conventions import Stage
 from romtime.deim import MatrixDiscreteEmpiricalInterpolation
 from romtime.parameters import get_uniform_dist
 from romtime.testing import MockSolver
@@ -43,7 +44,6 @@ def grid():
         "delta": get_uniform_dist(min=0.01, max=2.0),
         "beta": get_uniform_dist(min=1.0, max=10.0),
         "alpha_0": get_uniform_dist(min=0.01, max=2.0),
-        "epsilon": [0.0],
     }
 
     return _grid
@@ -124,7 +124,7 @@ def test_mdeim_tree_walk(problem_definition, grid, operator):
     # -------------------------------------------------------------------------
     # Assemble with a used parameter
     # -------------------------------------------------------------------------
-    mu = mdeim.mu_space[mdeim.OFFLINE][0]
+    mu = mdeim.mu_space[Stage.OFFLINE][0]
     print("Train mu:")
     pprint(mu)
     expected = assemble_fom(mu=mu, t=1.0)

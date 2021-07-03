@@ -1,9 +1,9 @@
 from pprint import pprint
 
-import fenics
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
+from romtime.conventions import Stage
 from romtime.deim import DiscreteEmpiricalInterpolation
 from romtime.parameters import get_uniform_dist
 from romtime.testing import MockSolver
@@ -42,7 +42,6 @@ def grid():
         "delta": get_uniform_dist(min=0.01, max=2.0),
         "beta": get_uniform_dist(min=1.0, max=10.0),
         "alpha_0": get_uniform_dist(min=0.01, max=2.0),
-        "epsilon": [0.0],
     }
 
     return _grid
@@ -109,6 +108,7 @@ def test_local_assembler_dofs(problem_definition, sampler, degrees):
     assert_allclose(fh_dofs, fh_local)
 
 
+@pytest.mark.xfail(reason="External computation of the snapshots has been dropped.")
 def test_deim(problem_definition, sampler, grid):
 
     domain, dirichet, forcing_term = problem_definition
@@ -180,7 +180,7 @@ def test_deim_tree_walk(problem_definition, grid):
     fh_deim.run()
 
     # Assemble with a used parameter
-    mu = fh_deim.mu_space[fh_deim.OFFLINE][0]
+    mu = fh_deim.mu_space[Stage.OFFLINE][0]
     print("Train mu:")
     pprint(mu)
     approximation = fh_deim._interpolate(mu=mu, t=1.0)

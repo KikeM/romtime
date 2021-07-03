@@ -1,8 +1,9 @@
-from functools import partial
+from functools import partial, reduce
 
 import fenics
 import numpy as np
 from dolfin.cpp.la import Matrix, Vector
+from romtime.conventions import RomParameters, OperatorType, Stage
 from romtime.fom.base import OneDimensionalSolver
 from romtime.utils import (
     bilinear_to_csr,
@@ -18,12 +19,6 @@ from .pod import orth
 
 
 class RomConstructor(Reductor):
-
-    MASS = "mass"
-    STIFFNESS = "stiffness"
-    FORCING = "forcing"
-    LIFTING = "lifting"
-    RHS = "rhs"
 
     GMRES_OPTIONS = dict(atol=1e-7, tol=1e-7, maxiter=1000)
 
@@ -41,7 +36,6 @@ class RomConstructor(Reductor):
 
         self.timesteps = dict()
         self.solutions = dict()
-        self.liftings = dict()
 
         self.errors = dict()
         self.exact = dict()
@@ -52,6 +46,26 @@ class RomConstructor(Reductor):
 
         self.mdeim_Mh = None
         self.mdeim_Ah = None
+        self.mdeim_Ch = None
+
+    def __del__(self):
+
+        del self.fom
+        del self.basis
+
+        del self.timesteps
+        del self.solutions
+
+        del self.errors
+        del self.exact
+
+        del self.deim_fh
+        del self.deim_fgh
+        del self.deim_rhs
+
+        del self.mdeim_Mh
+        del self.mdeim_Ah
+        del self.mdeim_Ch
 
     def to_fom_vector(self, uN):
         """Build FOM vector from ROM basis functions.
@@ -146,38 +160,50 @@ class RomConstructor(Reductor):
         """
 
         # Functionals
-        if which == self.FORCING:
+        if which == OperatorType.FORCING:
             self.deim_fh = reductor
-        elif which == self.LIFTING:
+        elif which == OperatorType.LIFTING:
             self.deim_fgh = reductor
-        elif which == self.RHS:
+        elif which == OperatorType.RHS:
             self.deim_rhs = reductor
 
         #  Matrices
-        elif which == self.STIFFNESS:
-            self.mdeim_Ah = reductor
-        elif which == self.MASS:
+        elif which == OperatorType.MASS:
             self.mdeim_Mh = reductor
+        elif which == OperatorType.STIFFNESS:
+            self.mdeim_Ah = reductor
+        elif which == OperatorType.CONVECTION:
+            self.mdeim_Ch = reductor
         else:
             raise NotImplementedError(f"Which is this reductor? {which}")
 
     def project_reductors(self):
         """Project collateral basis unto the solution reduced space."""
 
+        reduced_basis = self.basis
+
         if self.deim_fh is not None:
-            self.deim_fh.project_basis(V=self.basis)
+            self.deim_fh.project_basis(V=reduced_basis)
         if self.deim_fgh is not None:
-            self.deim_fgh.project_basis(V=self.basis)
+            self.deim_fgh.project_basis(V=reduced_basis)
         if self.deim_rhs is not None:
-            self.deim_rhs.project_basis(V=self.basis)
+            self.deim_rhs.project_basis(V=reduced_basis)
 
         if self.mdeim_Mh is not None:
-            self.mdeim_Mh.project_basis(V=self.basis)
+            self.mdeim_Mh.project_basis(V=reduced_basis)
         if self.mdeim_Ah is not None:
-            self.mdeim_Ah.project_basis(V=self.basis)
+            self.mdeim_Ah.project_basis(V=reduced_basis)
+        if self.mdeim_Ch is not None:
+            self.mdeim_Ch.project_basis(V=reduced_basis)
 
-    def build_reduced_basis(self, num_snapshots, num_basis=None):
-        """Build reduced basis.
+    def build_reduced_basis(
+        self,
+        num_snapshots=None,
+        mu_space=None,
+        num_basis=None,
+        tolerances=dict(),
+    ):
+        """Build solution reduced basis.
 
         Parameters
         ----------
@@ -186,7 +212,14 @@ class RomConstructor(Reductor):
         """
 
         # Create random sampler
-        sampler = self.build_sampling_space(num=num_snapshots, rnd=self.random_state)
+        if num_snapshots:
+            space = self.build_sampling_space(num=num_snapshots, rnd=self.random_state)
+        elif mu_space:
+            space = mu_space
+        else:
+            raise NotImplementedError(
+                "You need to provide a number of mu-snapshots or a space."
+            )
 
         # Put up the solver and start loop in parameter space
         fom = self.fom
@@ -194,32 +227,48 @@ class RomConstructor(Reductor):
             fom.setup()
 
         basis_time = list()
-        for mu in tqdm(sampler, desc="(ROM) Building reduced basis"):
+        for mu in tqdm(space, desc="(ROM) Building reduced basis"):
 
             # Save parameter
-            mu_idx, mu = self.add_mu(mu=mu, step=self.OFFLINE)
+            mu_idx, mu = self.add_mu(mu=mu, step=Stage.OFFLINE)
 
             # Solve FOM time-dependent problem
             fom.update_parametrization(mu)
             fom.solve()
 
             # Orthonormalize the time-snapshots
-            _basis, sigmas_time = orth(fom._snapshots)
+            _basis, sigmas_time, energy_time = orth(
+                fom._snapshots,
+                tol=tolerances.get(RomParameters.TOL_TIME, None),
+            )
             basis_time.append(_basis)
 
-            self.report[self.OFFLINE]["spectrum-time"][mu_idx] = sigmas_time
-            self.report[self.OFFLINE]["basis-shape-time"][mu_idx] = _basis.shape[1]
+            self.report[Stage.OFFLINE]["spectrum-time"][mu_idx] = sigmas_time
+            self.report[Stage.OFFLINE]["energy-time"][mu_idx] = energy_time
+            self.report[Stage.OFFLINE]["basis-shape-time"][mu_idx] = _basis.shape[1]
 
         basis = np.hstack(basis_time)
-        self.report[self.OFFLINE]["basis-shape-after-tree-walk"] = basis.shape[1]
+        self.report[Stage.OFFLINE]["basis-shape-after-tree-walk"] = basis.shape[1]
 
         # Compress again all the basis
-        basis, sigmas_mu = orth(basis, num=num_basis)
-        self.report[self.OFFLINE]["spectrum-mu"] = sigmas_mu
-        self.report[self.OFFLINE]["basis-shape-final"] = basis.shape[1]
+        basis, sigmas_mu, energy_mu = orth(
+            basis,
+            num=num_basis,
+            tol=tolerances.get(RomParameters.TOL_MU, None),
+            orthogonalize=False,
+        )
+
+        self.report[Stage.OFFLINE]["spectrum-mu"] = sigmas_mu
+        self.report[Stage.OFFLINE]["energy-mu"] = energy_mu
+        self.report[Stage.OFFLINE]["basis-shape-final"] = basis.shape[1]
 
         # Store reduced basis
         self.N = basis.shape[1]
+
+        assert (
+            self.N != 0
+        ), f"(ROM) There are no basis vectors. \n See tolerance according to mu-energy: {tolerances[RomParameters.TOL_MU]} < {energy_mu}"
+
         self.basis = basis
 
     def create_algebraic_solver(self):
@@ -250,7 +299,6 @@ class RomConstructor(Reductor):
 
         # Start iteration
         solutions = dict()
-        liftings = dict()
 
         if fom.exact_solution is not None:
             errors = []
@@ -260,31 +308,24 @@ class RomConstructor(Reductor):
 
         timesteps = [0.0]
 
-        g, _, _ = fom.create_lifting_operator(mu=mu, t=0.0, L=fom.domain[fom.L0])
-
         dt = fom.dt
         t = 0.0
+        #  TODO : project initial solution
         uN_n = np.zeros(shape=self.N)
         for timestep in tqdm(
-            range(fom.domain["nt"]), desc="(ROM) Online evaluation", leave=False
+            range(fom.domain["nt"]), desc="(ROM) Solve in time", leave=False
         ):
 
             # Update time
             t += dt
-            g.t = t
 
             timesteps.append(t)
 
             ########################
             # Assemble linear system
             ########################
-            MN_mat = self.assemble_mass(mu=mu, t=t)
-            AN_mat = self.assemble_stiffness(mu=mu, t=t)
-            KN_mat = MN_mat + dt * AN_mat
-
-            fN_vec = self.assemble_rhs(mu=mu, t=t)
-
-            bN_vec = MN_mat.dot(uN_n) + dt * fN_vec
+            MN_mat, KN_mat = self.assemble_system(mu, t)
+            bN_vec = self.assemble_system_rhs(mu, t, uN_n, MN_mat)
 
             ###############
             # Solve problem
@@ -297,7 +338,14 @@ class RomConstructor(Reductor):
             ##############
             # FEM solution
             ##############
-            gh = fenics.interpolate(g, fom.V)
+            if fom.Lt:
+                fom.move_mesh(mu=mu, t=t)
+                g, _, _ = fom.create_lifting_operator(mu=mu, t=t, L=fom.L)
+                fom.move_mesh(back=True)
+            else:
+                g, _, _ = fom.create_lifting_operator(mu=mu, t=t, L=fom.domain[fom.L0])
+
+            gh = fom.interpolate_func(g, fom.V, mu, t)
             gh = function_to_array(gh)
 
             uh = self.to_fom_vector(uN)
@@ -305,12 +353,11 @@ class RomConstructor(Reductor):
 
             # Collect solutions
             solutions[t] = uc_h.copy()
-            liftings[t] = gh.copy()
 
             # Compute error with exact solution
             if fom.exact_solution is not None:
-                ue = fenics.Expression(fom.exact_solution, degree=2, t=t, **mu)
-                ue_h = fenics.interpolate(ue, fom.V)
+                ue = fenics.Expression(fom.exact_solution, degree=1, t=t, **mu)
+                ue_h = fom.interpolate_func(ue, fom.V, mu, t)
                 ue_h = function_to_array(ue_h)
                 exact[t] = ue_h.copy()
 
@@ -319,11 +366,28 @@ class RomConstructor(Reductor):
 
         self.timesteps = timesteps
         self.solutions.update({idx_mu: solutions})
-        self.liftings.update({idx_mu: liftings})
 
         if ue is not None:
             self.errors.update({idx_mu: np.array(errors)})
             self.exact.update({idx_mu: exact})
+
+    def assemble_system_rhs(self, mu, t, uN_n, MN_mat):
+
+        fN_vec = self.assemble_rhs(mu=mu, t=t)
+
+        dt = self.fom.dt
+        bN_vec = MN_mat.dot(uN_n) + dt * fN_vec
+        return bN_vec
+
+    def assemble_system(self, mu, t):
+
+        MN_mat = self.assemble_mass(mu=mu, t=t)
+        AN_mat = self.assemble_stiffness(mu=mu, t=t)
+
+        dt = self.fom.dt
+        KN_mat = MN_mat + dt * AN_mat
+
+        return MN_mat, KN_mat
 
     def assemble_mass(self, mu, t):
         """Assemble reduced mass operator.
@@ -435,3 +499,54 @@ class RomConstructor(Reductor):
             fgN = self.to_rom(fgh)
 
         return fgN
+
+
+class RomConstructorMoving(RomConstructor):
+    def __init__(self, fom: OneDimensionalSolver, grid: dict) -> None:
+        super().__init__(fom=fom, grid=grid)
+
+    def assemble_convection(self, mu, t):
+        """Assemble stiffness operator.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+
+        Returns
+        -------
+        AN : np.array
+        """
+
+        if self.mdeim_Ch:
+            CN = self.mdeim_Ch.interpolate(mu=mu, t=t, which=self.ROM)
+        else:
+            # Assemble FOM operator
+            Ch = self.fom.assemble_convection(mu, t)
+            CN = self.to_rom(Ch)
+
+        return CN
+
+    def assemble_system(self, mu, t):
+        """Assemble algebraic ROM system.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+
+        Returns
+        -------
+        MN_mat : np.array
+            Mass matrix.
+        KN_mat : np.array
+        """
+
+        MN_mat = self.assemble_mass(mu=mu, t=t)
+        AN_mat = self.assemble_stiffness(mu=mu, t=t)
+        CN_mat = self.assemble_convection(mu=mu, t=t)
+
+        dt = self.fom.dt
+        KN_mat = MN_mat + dt * (AN_mat + CN_mat)
+
+        return MN_mat, KN_mat

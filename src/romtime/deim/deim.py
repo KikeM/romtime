@@ -1,4 +1,6 @@
+import matplotlib.pyplot as plt
 import numpy as np
+from romtime.conventions import RomParameters, Stage
 from romtime.rom.base import Reductor
 from romtime.rom.pod import orth
 from romtime.utils import functional_to_array, plot
@@ -19,8 +21,6 @@ class DiscreteEmpiricalInterpolation(Reductor):
     def __init__(
         self,
         assemble,
-        snapshots=None,
-        basis=None,
         grid=None,
         tree_walk_params=None,
         name=None,
@@ -53,17 +53,6 @@ class DiscreteEmpiricalInterpolation(Reductor):
 
         self.name = name
         self.assemble = assemble
-
-        if snapshots is not None:
-            self.snapshots = snapshots.copy()
-        else:
-            self.snapshots = None
-
-        if basis is not None:
-            self.Vfh = basis.copy()
-        else:
-            self.Vfh = None
-
         self.tree_walk_params = tree_walk_params
 
         self.Nh = int
@@ -74,7 +63,25 @@ class DiscreteEmpiricalInterpolation(Reductor):
         self.sigmas = list
         self.dofs = list
 
-    def run(self, orthogonalize=True, num_pod=None, tol_pod=None):
+        self.Vfh = None
+        self.snapshots = None
+
+    def __del__(self):
+
+        super().__del__()
+
+        del self.N
+        del self.Nh
+        del self.N_V  # Projection basis size
+        del self.VfN
+        del self.PT_U  # Interpolation matrix
+        del self.sigmas
+        del self.dofs
+
+        del self.Vfh
+        del self.snapshots
+
+    def run(self, orthogonalize=True, mu_space=None):
         """Run DEIM offline phase.
 
         Parameters
@@ -83,19 +90,28 @@ class DiscreteEmpiricalInterpolation(Reductor):
             Number of basis vectors to collect from the snapshots.
         """
 
-        if self.Vfh is None:
-            # No snapshots, no basis, perform tree walk
-            if self.snapshots is None:
-                params = self.tree_walk_params
-                Vfh, sigmas = self.perform_tree_walk(
-                    **params, orthogonalize=orthogonalize
-                )
-            else:
-                Vfh, sigmas = self.compress_snapshots(num=num_pod, tol=tol_pod)
+        ts = self.tree_walk_params[RomParameters.TS]
+        num_snapshots = self.tree_walk_params[RomParameters.NUM_SNAPSHOTS]
 
-            # Store basis and spectrum
-            self.Vfh = Vfh
-            self.sigmas = sigmas
+        num_mu = self.tree_walk_params.get(RomParameters.NUM_MU, None)
+        num_t = self.tree_walk_params.get(RomParameters.NUM_TIME, None)
+        tol_mu = self.tree_walk_params.get(RomParameters.TOL_MU, None)
+        tol_t = self.tree_walk_params.get(RomParameters.TOL_TIME, None)
+
+        Vfh, sigmas = self.perform_tree_walk(
+            ts=ts,
+            num_snapshots=num_snapshots,
+            num_mu=num_mu,
+            num_t=num_t,
+            tol_mu=tol_mu,
+            tol_t=tol_t,
+            orthogonalize=orthogonalize,
+            mu_space=mu_space,
+        )
+
+        # Store basis and spectrum
+        self.Vfh = Vfh
+        self.sigmas = sigmas
 
         self.Nh = self.Vfh.shape[0]
         self.N = self.Vfh.shape[1]
@@ -119,7 +135,7 @@ class DiscreteEmpiricalInterpolation(Reductor):
         """
         self.dofs = [(dof,) for dof in dofs]
 
-    def evaluate(self, num, ts):
+    def evaluate(self, ts, num=None, mu_space=None):
         """Evaluate online interpolation.
 
         Parameters
@@ -130,18 +146,20 @@ class DiscreteEmpiricalInterpolation(Reductor):
             Time instants to sample.
         """
 
-        sampler_test = self.build_sampling_space(num=num)
+        if mu_space:
+            space = mu_space
+        else:
+            assert num, "Provide number of samples to test"
+            space = self.build_sampling_space(num=num)
 
-        for mu in tqdm(
-            sampler_test,
-            desc=f"({self.TYPE}-{self.name}-Evaluation) Walk in mu",
-            leave=True,
-        ):
+        msg_mu = f"({self.TYPE}-{self.name}-Evaluation) Walk in mu"
+        msg_time = f"({self.TYPE}-Evaluation) Walk in time"
 
-            mu_idx, mu = self.add_mu(step=self.ONLINE, mu=mu)
-            for t in tqdm(
-                ts, desc=f"({self.TYPE}-Evaluation) Walk in time", leave=False
-            ):
+        for mu in tqdm(space, desc=msg_mu, leave=True):
+
+            mu_idx, mu = self.add_mu(step=Stage.ONLINE, mu=mu)
+
+            for t in tqdm(ts, desc=msg_time, leave=False):
 
                 # Exact solution
                 fh = self.assemble_snapshot(mu, t)
@@ -173,12 +191,13 @@ class DiscreteEmpiricalInterpolation(Reductor):
     def perform_tree_walk(
         self,
         ts,
-        num_snapshots,
         orthogonalize=True,
         num_mu=None,
         num_t=None,
         tol_mu=None,
         tol_t=None,
+        num_snapshots=None,
+        mu_space=None,
     ):
         """Perform a tree walk in the parameter and time space.
 
@@ -205,16 +224,18 @@ class DiscreteEmpiricalInterpolation(Reductor):
             Singular value decay.
         """
 
-        sampler = self.build_sampling_space(num=num_snapshots, rnd=self.random_state)
+        if mu_space:
+            space = mu_space
+        else:
+            space = self.build_sampling_space(num=num_snapshots, rnd=self.random_state)
 
         basis_time = []
-        for mu in tqdm(
-            sampler, desc=f"({self.TYPE}-{self.name}) Walk in mu", leave=True
-        ):
+        for mu in tqdm(space, desc=f"({self.TYPE}-{self.name}) Walk in mu", leave=True):
 
-            mu_idx, mu = self.add_mu(step=self.OFFLINE, mu=mu)
+            mu_idx, mu = self.add_mu(step=Stage.OFFLINE, mu=mu)
 
-            _basis, sigmas_time = self._walk_in_time(
+            # POD in time
+            _basis, sigmas_time, energy_time = self.walk_in_time(
                 mu=mu,
                 ts=ts,
                 num=num_t,
@@ -222,27 +243,30 @@ class DiscreteEmpiricalInterpolation(Reductor):
                 orthogonalize=orthogonalize,
             )
 
-            self.report[self.OFFLINE]["spectrum-time"][mu_idx] = sigmas_time
-            self.report[self.OFFLINE]["basis-shape-time"][mu_idx] = _basis.shape[1]
+            self.report[Stage.OFFLINE]["spectrum-time"][mu_idx] = sigmas_time
+            self.report[Stage.OFFLINE]["energy-time"][mu_idx] = energy_time
+            self.report[Stage.OFFLINE]["basis-shape-time"][mu_idx] = _basis.shape[1]
 
             basis_time.append(_basis)
 
         basis = np.hstack(basis_time)
-        self.report[self.OFFLINE]["basis-shape-after-tree-walk"] = basis.shape[1]
+        self.report[Stage.OFFLINE]["basis-shape-after-tree-walk"] = basis.shape[1]
 
-        basis, sigmas_mu = orth(
+        # POD in mu
+        basis, sigmas_mu, energy_mu = orth(
             snapshots=basis,
             num=num_mu,
             tol=tol_mu,
             orthogonalize=orthogonalize,
         )
 
-        self.report[self.OFFLINE]["spectrum-mu"] = sigmas_mu
-        self.report[self.OFFLINE]["basis-shape-final"] = basis.shape[1]
+        self.report[Stage.OFFLINE]["spectrum-mu"] = sigmas_mu
+        self.report[Stage.OFFLINE]["energy-mu"] = energy_mu
+        self.report[Stage.OFFLINE]["basis-shape-final"] = basis.shape[1]
 
         return basis, sigmas_mu
 
-    def _walk_in_time(self, mu, ts, orthogonalize=True, num=None, tol=None):
+    def walk_in_time(self, mu, ts, orthogonalize=True, num=None, tol=None):
         """Walk in the time-branch of the tree walk.
 
         Parameters
@@ -269,15 +293,17 @@ class DiscreteEmpiricalInterpolation(Reductor):
             op = self.assemble_snapshot(mu, t)
             snapshots.append(op)
 
+        shapes = [element.shape for element in snapshots]
+
         snapshots = np.array(snapshots).T
-        basis, sigmas = orth(
+        basis, sigmas, energy = orth(
             snapshots=snapshots,
             num=num,
             tol=tol,
-            orthogonalize=orthogonalize,
+            orthogonalize=False,
         )
 
-        return basis, sigmas
+        return basis, sigmas, energy
 
     def assemble_snapshot(self, mu, t):
         """Assemble functional in vector form.
@@ -370,26 +396,6 @@ class DiscreteEmpiricalInterpolation(Reductor):
         thetas = np.linalg.solve(matrix, rhs)
         return thetas
 
-    def compress_snapshots(self, num=None, tol=None):
-        """Build collateral basis via POD compression.
-
-        Parameters
-        ----------
-        num : int
-
-        Returns
-        -------
-        Vf : np.array
-            Array containing the generated collateral basis.
-        sigmas : np.array
-        """
-        #  Generate collateral basis with SVD
-        # TODO : Use POD
-        snap = self.snapshots
-        Vf, sigmas = orth(snap, num)
-
-        return Vf, sigmas
-
     def project_basis(self, V):
         """Project DEIM basis unto solution reduced basis.
 
@@ -453,3 +459,45 @@ class DiscreteEmpiricalInterpolation(Reductor):
             interpolation_dofs.append(dof_idx)
 
         return interpolation_dofs, P
+
+    def plot_errors(self):
+
+        for error in self.errors_rom.values():
+            plt.plot(self.tree_walk_params["ts"], np.log10(error))
+
+        plt.grid(True)
+        plt.xlabel("$t$")
+        plt.ylabel("L2 Error")
+        plt.title(f"(M)DEIM {self.name} online errors")
+        plt.show()
+
+    def plot_spectrum(self, which="sigmas"):
+
+        if which == "sigmas":
+
+            for sigma in self.report[Stage.OFFLINE][self.SPECTRUM_TIME].values():
+                plt.plot(np.log10(sigma))
+
+            sigma_mu = self.report[Stage.OFFLINE][self.SPECTRUM_MU]
+            sigma_mu = np.log10(sigma_mu)
+            plt.plot(sigma_mu, "--")
+
+            title = f"(M)DEIM {self.name} Spectrum Decay"
+            ylabel = "$\sigma$"
+
+        elif which == "energy":
+
+            for energy in self.report[Stage.OFFLINE][self.ENERGY_TIME].values():
+                plt.plot(energy)
+
+            energy_mu = self.report[Stage.OFFLINE][self.ENERGY_MU]
+            plt.plot(energy_mu, "--")
+
+            title = f"(M)DEIM {self.name} Basis Energy"
+            ylabel = "Energy"
+
+        plt.grid(True)
+        plt.xlabel("$i-th basis$")
+        plt.ylabel(ylabel)
+        plt.title(title)
+        plt.show()
