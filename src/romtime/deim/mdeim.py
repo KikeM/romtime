@@ -112,10 +112,8 @@ class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
 
         Parameters
         ----------
-        mu : [type]
-            [description]
-        t : [type]
-            [description]
+        mu : dict
+        t : float
 
         Returns
         -------
@@ -124,7 +122,15 @@ class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
         """
 
         Ah = self._assemble_matrix(mu, t)
+        Ah = eliminate_zeros(Ah)
         rows, cols, _ = get_nonzero_entries(Ah)
+
+        # Sort by rows
+        _list = list(zip(rows, cols))
+        rows_cols = sorted(_list, key=lambda x: x[0])
+
+        rows = [x[0] for x in rows_cols]
+        cols = [x[1] for x in rows_cols]
 
         return rows, cols
 

@@ -133,8 +133,9 @@ def eliminate_zeros(Ah):
     -------
     Ah : scipy.sparse.csr_matrix
     """
-    mask = np.isclose(Ah.data, 0.0, rtol=1e-16, atol=1e-16)
-    Ah.data[mask] = 0.0
+    TOLERANCE = 1e-15
+    mask = np.isclose(Ah.data, 0, rtol=TOLERANCE, atol=TOLERANCE)
+    Ah.data[mask] = 0
     Ah.eliminate_zeros()
 
     return Ah
