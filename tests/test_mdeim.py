@@ -95,6 +95,60 @@ def test_local_assembler_complete_operator(
     assert_allclose(entries, check)
 
 
+@pytest.mark.parametrize("degrees", DEGREES)
+@pytest.mark.parametrize("operator", OPERATORS)
+def test_interpolation_dense_matrix(
+    problem_definition, sampler, degrees, operator, grid
+):
+
+    domain, dirichlet, _ = problem_definition
+
+    domain["nx"] = 100
+
+    solver = MockSolver(
+        domain=domain, dirichlet=dirichlet, degrees=degrees, forcing_term=None
+    )
+    solver.setup()
+
+    mus = list(sampler)
+    mu = mus[0]
+    t = 5.0
+
+    if operator == OperatorType.STIFFNESS:
+        assemble_fom = solver.assemble_stiffness
+    elif operator == OperatorType.MASS:
+        assemble_fom = solver.assemble_mass
+    elif operator == OperatorType.CONVECTION:
+        assemble_fom = solver.assemble_convection
+
+    ts = np.linspace(0, 5.0, 20)
+    tree_walk = {"ts": ts, "num_snapshots": 50}
+
+    mdeim = MatrixDiscreteEmpiricalInterpolation(
+        name=operator,
+        assemble=assemble_fom,
+        tree_walk_params=tree_walk,
+        grid=grid,
+    )
+
+    rnd = np.random.RandomState(0)
+    mdeim.setup(rnd=rnd)
+    mdeim.run()
+
+    Ch = mdeim.assemble(mu=mu, t=0.5)
+    Ch = bilinear_to_csr(Ch)
+    Ch = Ch.todense()
+
+    Ch_int = mdeim.interpolate(
+        mu=mu,
+        t=0.5,
+        which=OperatorType.FOM,
+    )
+    Ch_int = Ch_int.todense()
+
+    assert_allclose(Ch, Ch_int)
+
+
 @pytest.mark.parametrize("operator", OPERATORS)
 def test_mdeim_tree_walk(problem_definition, grid, operator):
 
