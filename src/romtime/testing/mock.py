@@ -67,6 +67,23 @@ class MockSolver(OneDimensionalSolver):
 
         return Ah_mat
 
+    def assemble_convection(self, mu, t, entries=None):
+
+        # ---------------------------------------------------------------------
+        # Weak Formulation
+        # ---------------------------------------------------------------------
+        u, v, dx = self.u, self.v, fenics.dx
+
+        Ch = -u.dx(0) * v * dx
+
+        if entries:
+            Ch_mat = self.assemble_local(Ch, entries=entries)
+        else:
+            bc = self.define_homogeneous_dirichlet_bc()
+            Ch_mat = self.assemble_operator(Ch, bc)
+
+        return Ch_mat
+
     def assemble_forcing(self, mu, t, entries=None):
         """Assemble test forcing term
 

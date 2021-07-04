@@ -4,15 +4,15 @@ import fenics
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
-from romtime.conventions import Stage
+from romtime.conventions import OperatorType, Stage
 from romtime.deim import MatrixDiscreteEmpiricalInterpolation
 from romtime.parameters import get_uniform_dist
 from romtime.testing import MockSolver
-from romtime.utils import bilinear_to_csr, get_nonzero_entries
+from romtime.utils import bilinear_to_csr, eliminate_zeros, get_nonzero_entries
 from sklearn.model_selection import ParameterSampler
 
 DEGREES = [1, 2, 3, 4, 5]
-OPERATORS = ["stiffness", "mass"]
+OPERATORS = [OperatorType.STIFFNESS, OperatorType.MASS, OperatorType.CONVECTION]
 
 
 @pytest.fixture
@@ -77,10 +77,12 @@ def test_local_assembler_complete_operator(
     mu = mus[0]
     t = 5.0
 
-    if operator == "stiffness":
+    if operator == OperatorType.STIFFNESS:
         assemble = solver.assemble_stiffness
-    elif operator == "mass":
+    elif operator == OperatorType.MASS:
         assemble = solver.assemble_mass
+    elif operator == OperatorType.CONVECTION:
+        assemble = solver.assemble_convection
 
     Ah = assemble(mu=mu, t=t)
     Ah = bilinear_to_csr(Ah)
@@ -105,10 +107,12 @@ def test_mdeim_tree_walk(problem_definition, grid, operator):
     ts = np.linspace(0, 5.0, 20)
     tree_walk = {"ts": ts, "num_snapshots": 50}
 
-    if operator == "stiffness":
+    if operator == OperatorType.STIFFNESS:
         assemble_fom = solver.assemble_stiffness
-    elif operator == "mass":
+    elif operator == OperatorType.MASS:
         assemble_fom = solver.assemble_mass
+    elif operator == OperatorType.CONVECTION:
+        assemble_fom = solver.assemble_convection
 
     mdeim = MatrixDiscreteEmpiricalInterpolation(
         name=operator,
@@ -129,7 +133,7 @@ def test_mdeim_tree_walk(problem_definition, grid, operator):
     pprint(mu)
     expected = assemble_fom(mu=mu, t=1.0)
     expected = bilinear_to_csr(expected)
-    expected.eliminate_zeros()
+    expected = eliminate_zeros(expected)
     expected = expected.data
 
     approximation = mdeim.interpolate(mu=mu, t=1.0)
@@ -157,7 +161,7 @@ def test_mdeim_tree_walk(problem_definition, grid, operator):
     # Assemble full array
     expected = assemble_fom(mu=mu, t=1.0)
     expected = bilinear_to_csr(expected)
-    expected.eliminate_zeros()
+    expected = eliminate_zeros(expected)
     expected = expected.data
 
     approximation = mdeim.interpolate(mu=mu, t=1.0)

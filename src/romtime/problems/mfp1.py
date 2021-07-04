@@ -437,7 +437,13 @@ class HyperReducedOrderModelFixed:
         if show:
             plt.show()
 
-    def _run_deim(self, object, which, mu_space, evaluate=False):
+    def _run_deim(
+        self,
+        object: DiscreteEmpiricalInterpolation,
+        which: str,
+        mu_space: list,
+        evaluate=False,
+    ):
 
         # Build collateral basis
         object.run(mu_space=mu_space)
@@ -522,7 +528,7 @@ class HyperReducedOrderModelMoving(HyperReducedOrderModelFixed):
         # MDEIM
         # ---------------------------------------------------------------------
         mdeim_convection = MatrixDiscreteEmpiricalInterpolation(
-            name="Convection",
+            name=OperatorType.CONVECTION,
             assemble=fom.assemble_convection,
             grid=grid,
             tree_walk_params=self.mdeim_params,
