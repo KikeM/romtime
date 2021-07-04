@@ -593,12 +593,20 @@ def test_hrom(grid):
         RomParameters.NUM_ONLINE: 10,
     }
 
+    models = {
+        OperatorType.MASS: True,
+        OperatorType.STIFFNESS: True,
+        OperatorType.CONVECTION: True,
+        OperatorType.RHS: True,
+    }
+
     hrom = HyperReducedOrderModelFixed(
         grid=grid,
         fom_params=fom_params,
         rom_params=rom_params,
         deim_params=deim_params,
         mdeim_params=deim_params,
+        models=models,
         rnd=rnd,
     )
 
