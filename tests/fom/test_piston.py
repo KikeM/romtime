@@ -74,24 +74,26 @@ def create_solver(L, nx, nt, tf, grid_base):
 @pytest.fixture
 def parameters():
 
-    sound = 1.0
-    omega = 0.04027158415806615
-    alpha = 100.0
+    a0 = 10.0
+    omega = 20.0
+    alpha = 0.000001
+    delta = 0.1
 
-    return sound, omega, alpha
+    return a0, omega, alpha, delta
 
 
 @pytest.fixture
 def grid():
 
-    sound = []
+    a0 = []
     omega = []
     alpha = [100.0, 100.0]
 
     _grid = {
-        "sound": get_uniform_dist(min=0.01, max=2.0),
+        "a0": get_uniform_dist(min=0.01, max=2.0),
         "omega": get_uniform_dist(min=1.0, max=10.0),
         "alpha": get_uniform_dist(min=0.01, max=2.0),
+        "delta": get_uniform_dist(min=0.01, max=2.0),
     }
 
     return _grid
@@ -100,8 +102,8 @@ def grid():
 @pytest.fixture
 def grid_base(parameters):
 
-    sound, omega, alpha = parameters
-    _grid = dict(sound=sound, omega=omega, alpha=alpha)
+    a0, omega, alpha, delta = parameters
+    _grid = dict(a0=a0, omega=omega, alpha=alpha, delta=delta)
 
     return _grid
 
@@ -117,30 +119,29 @@ def domain():
 
 def test_fom(parameters, grid_base):
 
-    sound, omega, alpha = parameters
+    a0, omega, alpha, delta = parameters
+    gamma = 1.4
 
     # Run loop
     L0 = 1
-    nx = 100
-    nt = 100
+    nx = 1000
+    nt = 1000
 
-    tf = 5.0
+    tf = 2.0
 
     solutions = []
     solver = create_solver(nx=nx, nt=nt, tf=tf, L=L0, grid_base=grid_base)
     mu = {
-        "sound": sound,
+        "a0": a0,
         "omega": omega,
         "alpha": alpha,
+        "delta": delta,
+        "gamma": gamma,
     }
 
     # Update parameters
     solver.update_parametrization(new=mu)
     solver.solve()
 
-    breakpoint()
-
-    tf_eff = solver.timesteps[-1]
-    sol = solver.solutions[tf_eff]
-    sol_vec = function_to_array(sol)
-    solutions.append(sol_vec)
+    solver.plot_solution(pics=20)
+    solver.compute_mass_conservation(figure=True)

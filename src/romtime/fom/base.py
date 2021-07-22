@@ -27,10 +27,14 @@ def move_mesh(assemble):
     """
 
     @wraps(assemble)
-    def _move_mesh(self, mu, t, entries=None):
+    def _move_mesh(self, mu, t, entries=None, u_n=None):
 
         self.move_mesh(mu, t)
-        operator = assemble(self, mu, t, entries)
+        if u_n is None:
+            operator = assemble(self, mu, t, entries)
+        else:
+            operator = assemble(self, mu, t, entries, u_n)
+
         self.move_mesh(back=True)
 
         return operator
@@ -161,6 +165,16 @@ class OneDimensionalSolver(ABC):
         L : float
         """
         return np.max(self.x)
+
+    @property
+    def scale_solutions(self):
+        return 1.0
+
+    @staticmethod
+    def dict_to_array(my_dict):
+        return np.array(
+            [function_to_array(element) for element in list(my_dict.values())]
+        ).T
 
     def build_cell_to_dofs(self):
         """Create mapping between mesh cells and dofs."""
@@ -297,6 +311,7 @@ class OneDimensionalSolver(ABC):
         This is necessary for the (M)DEIM procedure.
         """
 
+        # ---------------------------------------------------------------------
         # Assemble the mass matrix
         Mh = OneDimensionalSolver.assemble_mass(self)
         Ah = self.assemble_stiffness_topology()
@@ -305,6 +320,7 @@ class OneDimensionalSolver(ABC):
         Kh = bilinear_to_csr(Kh)
         Kh = eliminate_zeros(Kh)
 
+        # ---------------------------------------------------------------------
         # Find the values equal to one
         rows, cols, values = get_nonzero_entries(Kh)
         mask_ones = np.isclose(values, self.DIRICHLET_ENTRY)
@@ -704,7 +720,13 @@ class OneDimensionalSolver(ABC):
             ue = None
 
         ts = range(self.domain["nt"])
-        for timestep in tqdm(ts, desc="(FOM) Time integration", leave=False):
+        for timestep in tqdm(
+            ts,
+            desc="(FOM) Time integration",
+            leave=False,
+            miniters=100,
+            mininterval=1.0,
+        ):
 
             # Update time
             t += dt
@@ -715,7 +737,7 @@ class OneDimensionalSolver(ABC):
             # Assemble algebraic problem
             # -----------------------------------------------------------------
             # LHS
-            Mh_mat, Kh_mat = self.assemble_system(mu, t)
+            Mh_mat, Kh_mat = self.assemble_system(mu, t, u_n)
 
             # RHS
             bh_vec = self.assemble_system_rhs(mu, t, u_n, Mh_mat)
@@ -768,7 +790,6 @@ class OneDimensionalSolver(ABC):
         # Collect snapshots as actual arrays
         self._snapshots = self.dict_to_array(snapshots)
         self._solutions = self.dict_to_array(solutions)
-        self._exact = self.dict_to_array(exact)
 
         if self.Lt:
             self.domain_x = np.hstack(domain_x)
@@ -776,6 +797,7 @@ class OneDimensionalSolver(ABC):
             self.domain_x = self.x
 
         if ue is not None:
+            self._exact = self.dict_to_array(exact)
             self.errors = errors
             self.exact = exact
 
@@ -784,14 +806,8 @@ class OneDimensionalSolver(ABC):
         pass
 
     @abstractmethod
-    def assemble_system(self, mu, t):
+    def assemble_system(self, mu, t, u_n=None):
         pass
-
-    @staticmethod
-    def dict_to_array(my_dict):
-        return np.array(
-            [function_to_array(element) for element in list(my_dict.values())]
-        ).T
 
     def interpolate_func(self, g, V, mu=None, t=None):
         """Interpolate function in the V space.
@@ -886,7 +902,7 @@ class OneDimensionalSolver(ABC):
         for t in range(0, self.domain_x.shape[1], num):
 
             x = self.domain_x[:, t]
-            y = self._solutions[:, t]
+            y = self.scale_solutions * self._solutions[:, t]
             plt.plot(x, y, c="b")
 
             _t = self.timesteps[t]

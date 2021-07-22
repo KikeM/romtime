@@ -66,7 +66,7 @@ class HeatEquationSolver(OneDimensionalSolver):
 
         return bh_vec
 
-    def assemble_system(self, mu, t):
+    def assemble_system(self, mu, t, u_n=None):
 
         Mh_mat = self.assemble_mass(mu=mu, t=t)
         Ah_mat = self.assemble_stiffness(mu=mu, t=t)
@@ -248,7 +248,7 @@ class HeatEquationMovingSolver(HeatEquationSolver):
 
         return w
 
-    def assemble_system(self, mu, t):
+    def assemble_system(self, mu, t, u_n=None):
 
         Mh_mat = self.assemble_mass(mu=mu, t=t)
         Ah_mat = self.assemble_stiffness(mu=mu, t=t)
