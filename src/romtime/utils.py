@@ -5,13 +5,19 @@ from scipy.sparse import csr_matrix
 from scipy.sparse import find as get_nonzero_entries
 
 
-def plot(A, plot_kwargs={}, title=None):
+def plot(A, x=None, plot_kwargs={}, title=None, show=True):
 
-    plt.plot(A, **plot_kwargs)
+    if x:
+        plt.plot(x, A, **plot_kwargs)
+    else:
+        plt.plot(A, **plot_kwargs)
+
     plt.grid(True)
     if title:
         plt.title(title)
-    plt.show()
+
+    if show:
+        plt.show()
 
 
 def function_to_array(coef_func):

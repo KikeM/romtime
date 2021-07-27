@@ -1,12 +1,15 @@
 import fenics
 import numpy as np
+from romtime.utils import function_to_array, plot, plt
 
 from .base import OneDimensionalSolver, move_mesh
 
 
 class OneDimensionalBurgersConventions:
 
-    A0 = "speed_of_sound"
+    A0 = "a0"
+    DELTA = "delta"
+    GAMMA = "gamma"
 
 
 class OneDimensionalBurgers(OneDimensionalSolver):
@@ -43,6 +46,23 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
         # FEM structures
         self.alpha = None  # Nonlinear diffusion coefficient
+
+        #  Derived results
+        self.mc = None  # Mass conservation in time
+        self.outflow = None
+
+    @property
+    def scale_solutions(self):
+        return self.mu[OneDimensionalBurgersConventions.A0]
+
+    @property
+    def nonlinear_coefficient(self):
+        a0 = self.mu[OneDimensionalBurgersConventions.A0]
+        gamma = self.mu[OneDimensionalBurgersConventions.GAMMA]
+        A = (gamma + 1.0) / 2.0
+
+        coeff = A * a0
+        return coeff
 
     @staticmethod
     def _compute_linear_interpolation(right, mu, t, L, dLt_dt=0.0):
@@ -128,6 +148,29 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
         return g, dg_dt, grad_g
 
+    def define_homogeneous_dirichlet_bc(self):
+        """Define right-only homogeneous boundary conditions.
+
+        Returns
+        -------
+        bc : fenics.DirichletBC
+        """
+        TOL = 1e-14
+
+        V = self.V
+
+        # Create boundary conditions
+        def boundary_R(x, on_boundary):
+            is_0 = fenics.near(x[0], 0, TOL)
+            is_R = on_boundary & (not is_0)
+            return is_R
+
+        # snapshots boundary conditions
+        zero_dirichlet = fenics.Constant(0.0)
+        bc = fenics.DirichletBC(V, zero_dirichlet, boundary_R)
+
+        return bc
+
     def create_diffusion_coefficient(self, mu=None):
         """Create non-linear diffusion term.
 
@@ -158,7 +201,13 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         dLt_dt = self.dLt_dt(t=t, **mu)
         Lt = self.Lt(t=t, **mu)
 
-        w = fenics.Expression("x[0] * dLt_dt / Lt", degree=2, dLt_dt=dLt_dt, Lt=Lt)
+        w = fenics.Expression(
+            "x[0] * dLt_dt / Lt",
+            degree=2,
+            dLt_dt=dLt_dt,
+            Lt=Lt,
+            **mu,
+        )
 
         return w
 
@@ -235,15 +284,14 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         return Ah_mat
 
     @move_mesh
-    def assemble_nonlinear(self, mu, t, u_n, entries=None):
+    def assemble_nonlinear(self, mu, t, entries=None, u_n=None):
 
         # ---------------------------------------------------------------------
         # Weak Formulation
         # ---------------------------------------------------------------------
         u, v, dx = self.u, self.v, fenics.dx
 
-        w = self.compute_mesh_velocity(mu=mu, t=t)
-        b0 = 1.0
+        b0 = self.nonlinear_coefficient
 
         Ch = b0 * u_n * u.dx(0) * v * dx
 
@@ -265,7 +313,10 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         L = self.L
         g, _, grad_g = self.create_lifting_operator(mu=mu, t=t, L=L)
 
-        Ch = (g * u.dx(0) * v + grad_g * u * v) * dx
+        b0 = self.nonlinear_coefficient
+        s1 = g * u.dx(0)
+        s2 = grad_g * u
+        Ch = b0 * (s1 + s2) * v * dx
 
         if entries:
             Ch_mat = self.assemble_local(form=Ch, entries=entries)
@@ -277,16 +328,29 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
     @move_mesh
     def assemble_convection(self, mu, t, entries=None):
+        """Force convection due to mesh velocity and speed of sound propagation.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        entries : list, optional
+            [description], by default None
+
+        Returns
+        -------
+        [type]
+            [description]
+        """
 
         # ---------------------------------------------------------------------
         # Weak Formulation
         u, v, dx = self.u, self.v, fenics.dx
 
-        L = self.L
-        a0 = 1.0
+        a0 = mu[OneDimensionalBurgersConventions.A0]
         w = self.compute_mesh_velocity(mu=mu, t=t)
 
-        Ch = -(w + a0) * u.dx(0) * v * dx
+        Ch = -(a0 + w) * u.dx(0) * v * dx
 
         if entries:
             Ch_mat = self.assemble_local(form=Ch, entries=entries)
@@ -295,30 +359,6 @@ class OneDimensionalBurgers(OneDimensionalSolver):
             Ch_mat = self.assemble_operator(Ch, bc)
 
         return Ch_mat
-
-    # -------------------------------------------------------------------------
-    # RHS terms
-    # The assemble_rhs does not need this decorator,
-    # it calls assemble_forcing and assemble_lifting, which are decorated.
-    # We would be moving twice the mesh!
-    def assemble_rhs(self, mu, t, entries=None):
-        """Assemble algebraic problem RHS.
-
-        Parameters
-        ----------
-        mu : dict
-        t : float
-        entries : list of tuples, optional
-            Local entries to assemble when using DEIM techniques, by default None
-
-        Returns
-        -------
-        """
-
-        fh = self.assemble_forcing(mu=mu, t=t, entries=entries)
-        fgh = self.assemble_lifting(mu=mu, t=t, entries=entries)
-
-        return fh + fgh
 
     @move_mesh
     def assemble_forcing(self, mu, t, entries=None):
@@ -368,20 +408,36 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         -------
         """
 
-        L = self.L
-        _, dg_dt, _grad_g = self.create_lifting_operator(mu=mu, t=t, L=L)
-
-        # Small hack to handle fenics internals
-        grad_g = fenics.as_vector((_grad_g,))
-        alpha = self.create_diffusion_coefficient(mu)
-
         # ---------------------------------------------------------------------
         # Weak Formulation
         # ---------------------------------------------------------------------
-        dot, dx, grad = fenics.dot, fenics.dx, fenics.grad
-        v = self.v
+        v, dx = self.v, fenics.dx
+        L = self.L
+        g, dg_dt, grad_g = self.create_lifting_operator(mu=mu, t=t, L=L)
 
-        fgh = -(dg_dt * v + alpha * dot(grad_g, grad(v))) * dx
+        # ---------------------------------------------------------------------
+        # Inertia
+        time_derivative = dg_dt * v * dx
+
+        # ---------------------------------------------------------------------
+        # Inertia nonlinear
+        b0 = self.nonlinear_coefficient
+        nonlinear = b0 * g * grad_g * v * dx
+
+        # ---------------------------------------------------------------------
+        # Convection
+        w = self.compute_mesh_velocity(mu=mu, t=t)
+        a0 = self.mu[OneDimensionalBurgersConventions.A0]
+        convection = (a0 + w) * grad_g * v * dx
+
+        # ---------------------------------------------------------------------
+        # Diffusion
+        alpha = self.create_diffusion_coefficient(mu)
+        diffusion = alpha * grad_g * v.dx(0) * dx
+
+        # ---------------------------------------------------------------------
+        # Aggregate effects
+        fgh = -(time_derivative + nonlinear + diffusion) + convection
 
         # ---------------------------------------------------------------------
         # Assembly
@@ -393,3 +449,102 @@ class OneDimensionalBurgers(OneDimensionalSolver):
             fgh_vec = self.assemble_operator(fgh, bc)
 
         return fgh_vec
+
+    @staticmethod
+    def compute_rho(u, gamma):
+
+        # Velocity scaling
+        A = gamma - 1.0
+        A /= 2.0
+
+        # Exponent
+        exp = 2.0 / (gamma - 1)
+
+        rho = (1.0 - A * u) ** (exp)
+
+        return rho
+
+    @staticmethod
+    def compute_p(u, gamma):
+
+        # Velocity scaling
+        A = gamma - 1.0
+        A /= 2.0
+
+        # Exponent
+        exp = 2.0 * gamma / (gamma - 1)
+
+        pressure = (1.0 - A * u) ** (exp)
+
+        return pressure
+
+    def compute_mass_conservation(self, figure=False):
+
+        gamma = self.mu[OneDimensionalBurgersConventions.GAMMA]
+
+        I = []
+        outflow = []
+        dx = fenics.dx
+        for t, u in self.solutions.items():
+
+            # -----------------------------------------------------------------
+            # Integral computation
+            self.move_mesh(mu=self.mu, t=t)
+            rho = self.compute_rho(u, gamma)
+            integrand = rho * dx
+            integral = fenics.assemble(integrand)
+            self.move_mesh(back=True)
+
+            I.append(integral)
+
+            # -----------------------------------------------------------------
+            # Outflow computation
+            rho0 = self.compute_rho(u(0), gamma=gamma)
+            out = rho0 * u(0)
+            outflow.append(out)
+
+        I = np.array(I)
+        outflow = np.array(outflow)
+
+        # ---------------------------------------------------------------------
+        # Compute integral time derivative
+        dt = self.dt
+        Iprime = np.gradient(I, dt, edge_order=2)
+
+        a0 = self.mu[OneDimensionalBurgersConventions.A0]
+        outflow *= a0
+
+        mc = Iprime - outflow
+
+        self.mc = mc
+        self.outflow = outflow
+
+        if figure:
+            ts = list(self.solutions.keys())
+            plot(
+                x=ts,
+                A=Iprime,
+                show=False,
+                plot_kwargs=dict(label="$\\frac{d}{dt} \\int \\rho dx$"),
+            )
+            plot(
+                x=ts,
+                A=outflow,
+                show=False,
+                plot_kwargs=dict(label="Outflow $(\\rho(0,t)u(0,t))$"),
+            )
+            plot(
+                x=ts,
+                A=mc,
+                show=False,
+                plot_kwargs=dict(
+                    linestyle="--",
+                    label="Mass Conservation",
+                ),
+            )
+            plt.legend()
+            plt.xlabel("t (s)")
+            plt.title(f"dt = {dt}, nx = {self.domain[self.NX]}")
+            plt.show()
+
+        return (mc, outflow, I, Iprime)

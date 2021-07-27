@@ -14,8 +14,8 @@ def define_piston_problem(L=None, nx=None, tf=None, nt=None):
 
     # -------------------------------------------------------------------------
     # Boundary conditions
-    bL = "- omega / a0 * cos(omega * t)"
-    dbL_dt = "omega * omega / a0 * sin(omega * t)"
+    bL = "- delta * (omega / a0) * cos(omega * t)"
+    dbL_dt = "delta * omega * (omega / a0) * sin(omega * t)"
 
     boundary_conditions = {"bL": bL, "dbL_dt": dbL_dt}
 
@@ -29,7 +29,7 @@ def define_piston_problem(L=None, nx=None, tf=None, nt=None):
 
     # -------------------------------------------------------------------------
     # Moving boundary function
-    def Lt(omega, t, **kwargs):
+    def Lt(omega, delta, t, **kwargs):
         """Mesh scaling function.
 
         Parameters
@@ -42,9 +42,9 @@ def define_piston_problem(L=None, nx=None, tf=None, nt=None):
         -------
         float
         """
-        return 1.0 - np.sin(omega * t)
+        return 1.0 - delta * np.sin(omega * t)
 
-    def dLt_dt(omega, t, **kwargs):
+    def dLt_dt(omega, delta, t, **kwargs):
         """Mesh scaling function time derivative.
 
         Parameters
@@ -57,6 +57,6 @@ def define_piston_problem(L=None, nx=None, tf=None, nt=None):
         -------
         float
         """
-        return -omega * np.cos(omega * t)
+        return -omega * delta * np.cos(omega * t)
 
     return domain, boundary_conditions, forcing_term, u0, Lt, dLt_dt
