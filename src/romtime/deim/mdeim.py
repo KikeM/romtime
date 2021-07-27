@@ -1,4 +1,7 @@
+import fenics
 import numpy as np
+from romtime.conventions import EmpiricalInterpolation, RomParameters, Stage
+from romtime.rom.pod import orth
 from romtime.utils import (
     bilinear_to_csr,
     eliminate_zeros,
@@ -6,13 +9,14 @@ from romtime.utils import (
     project_csr,
     vector_to_csr,
 )
+from tqdm.std import tqdm
 
 from .deim import DiscreteEmpiricalInterpolation
 
 
 class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
 
-    TYPE = "MDEIM"
+    TYPE = EmpiricalInterpolation.MDEIM
 
     def __init__(
         self,

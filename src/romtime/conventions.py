@@ -1,17 +1,32 @@
 FIG_KWARGS = dict(dpi=300, bbox_inches="tight")
 
 
+class BDF:
+
+    ONE = "1"
+    TWO = "2"
+
+
 class OperatorType:
 
-    MASS = "mass"
-    STIFFNESS = "stiffness"
     CONVECTION = "convection"
     FORCING = "forcing"
     LIFTING = "lifting"
+    MASS = "mass"
+    NONLINEAR = "nonlinear"
+    NONLINEAR_LIFTING = "nonlinear-lifting"
     RHS = "rhs"
+    STIFFNESS = "stiffness"
 
     FOM = "fom"
     ROM = "rom"
+
+
+class EmpiricalInterpolation:
+
+    DEIM = "DEIM"
+    MDEIM = "MDEIM"
+    NONLINEAR = "N-MDEIM"
 
 
 class Stage:
@@ -52,3 +67,5 @@ class RomParameters:
     TOL_MU = "tol_mu"
     NUM_TIME = "num_time"
     TOL_TIME = "tol_time"
+    NUM_BASIS = "num_phi"
+    TOL_BASIS = "tol_phi"

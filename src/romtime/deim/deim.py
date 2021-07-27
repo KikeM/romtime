@@ -1,10 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from romtime.conventions import RomParameters, Stage
+from romtime.conventions import EmpiricalInterpolation, FIG_KWARGS, RomParameters, Stage
 from romtime.rom.base import Reductor
 from romtime.rom.pod import orth
 from romtime.utils import functional_to_array, plot
 from tqdm import tqdm
+import pickle
 
 
 def basis_vector(size, index):
@@ -16,7 +17,7 @@ def basis_vector(size, index):
 
 class DiscreteEmpiricalInterpolation(Reductor):
 
-    TYPE = "DEIM"
+    TYPE = EmpiricalInterpolation.DEIM
 
     def __init__(
         self,
@@ -81,7 +82,16 @@ class DiscreteEmpiricalInterpolation(Reductor):
         del self.Vfh
         del self.snapshots
 
-    def run(self, orthogonalize=True, mu_space=None):
+    def dump_basis(self, path=None):
+
+        name = "_".join(self.name.lower().split())
+        type = self.TYPE.lower()
+        if self.Vfh is not None:
+            filename = f"basis_fom_{type}_{name}.pkl"
+            with open(filename, mode="wb") as fp:
+                pickle.dump(self.Vfh, fp)
+
+    def run(self, normalize=True, mu_space=None):
         """Run DEIM offline phase.
 
         Parameters
@@ -98,14 +108,14 @@ class DiscreteEmpiricalInterpolation(Reductor):
         tol_mu = self.tree_walk_params.get(RomParameters.TOL_MU, None)
         tol_t = self.tree_walk_params.get(RomParameters.TOL_TIME, None)
 
-        Vfh, sigmas = self.perform_tree_walk(
+        Vfh, sigmas = self.tree_walk(
             ts=ts,
             num_snapshots=num_snapshots,
             num_mu=num_mu,
             num_t=num_t,
             tol_mu=tol_mu,
             tol_t=tol_t,
-            orthogonalize=orthogonalize,
+            normalize=normalize,
             mu_space=mu_space,
         )
 
@@ -188,10 +198,10 @@ class DiscreteEmpiricalInterpolation(Reductor):
         fh = functional_to_array(fh)
         return fh
 
-    def perform_tree_walk(
+    def tree_walk(
         self,
         ts,
-        orthogonalize=True,
+        normalize=True,
         num_mu=None,
         num_t=None,
         tol_mu=None,
@@ -235,12 +245,12 @@ class DiscreteEmpiricalInterpolation(Reductor):
             mu_idx, mu = self.add_mu(step=Stage.OFFLINE, mu=mu)
 
             # POD in time
-            _basis, sigmas_time, energy_time = self.walk_in_time(
+            _basis, sigmas_time, energy_time = self.walk_time(
                 mu=mu,
                 ts=ts,
                 num=num_t,
                 tol=tol_t,
-                orthogonalize=orthogonalize,
+                normalize=normalize,
             )
 
             self.report[Stage.OFFLINE]["spectrum-time"][mu_idx] = sigmas_time
@@ -257,7 +267,7 @@ class DiscreteEmpiricalInterpolation(Reductor):
             snapshots=basis,
             num=num_mu,
             tol=tol_mu,
-            orthogonalize=orthogonalize,
+            normalize=normalize,
         )
 
         self.report[Stage.OFFLINE]["spectrum-mu"] = sigmas_mu
@@ -266,7 +276,7 @@ class DiscreteEmpiricalInterpolation(Reductor):
 
         return basis, sigmas_mu
 
-    def walk_in_time(self, mu, ts, orthogonalize=True, num=None, tol=None):
+    def walk_time(self, mu, ts, normalize=True, num=None, tol=None):
         """Walk in the time-branch of the tree walk.
 
         Parameters
@@ -293,14 +303,17 @@ class DiscreteEmpiricalInterpolation(Reductor):
             op = self.assemble_snapshot(mu, t)
             snapshots.append(op)
 
-        shapes = [element.shape for element in snapshots]
-
         snapshots = np.array(snapshots).T
+
+        # Enforce boundary entries do not matter
+        # TODO : Generalize boundary elements for MDEIM
+        if self.TYPE == EmpiricalInterpolation.MDEIM:
+            snapshots[0, :] = 0.0
         basis, sigmas, energy = orth(
             snapshots=snapshots,
             num=num,
             tol=tol,
-            orthogonalize=False,
+            normalize=False,
         )
 
         return basis, sigmas, energy
@@ -352,6 +365,11 @@ class DiscreteEmpiricalInterpolation(Reductor):
         # Assemble approximation
         N = self.N
         approximation = np.sum([thetas[i] * Vf[:, i] for i in range(N)], axis=0)
+
+        # Enforce boundary elements
+        # TODO : Generalize boundary elements for MDEIM
+        if (which == self.FOM) & (self.TYPE == EmpiricalInterpolation.MDEIM):
+            approximation[0] = 1.0
 
         return approximation
 
@@ -460,7 +478,10 @@ class DiscreteEmpiricalInterpolation(Reductor):
 
         return interpolation_dofs, P
 
-    def plot_errors(self):
+    def plot_errors(self, new=True, save=None, show=True):
+
+        if new:
+            plt.figure()
 
         for error in self.errors_rom.values():
             plt.plot(self.tree_walk_params["ts"], np.log10(error))
@@ -468,8 +489,15 @@ class DiscreteEmpiricalInterpolation(Reductor):
         plt.grid(True)
         plt.xlabel("$t$")
         plt.ylabel("L2 Error")
-        plt.title(f"(M)DEIM {self.name} online errors")
-        plt.show()
+        plt.title(f"(M)DEIM {self.name.title()} online errors")
+
+        if show:
+            plt.show()
+
+        if save:
+            name = f"mdeim_{self.name}_online_errors"
+            plt.savefig(name + ".png", **FIG_KWARGS)
+            plt.close()
 
     def plot_spectrum(self, which="sigmas"):
 
@@ -482,8 +510,8 @@ class DiscreteEmpiricalInterpolation(Reductor):
             sigma_mu = np.log10(sigma_mu)
             plt.plot(sigma_mu, "--")
 
-            title = f"(M)DEIM {self.name} Spectrum Decay"
-            ylabel = "$\sigma$"
+            title = f"(M)DEIM {self.name.title()} Spectrum Decay"
+            ylabel = "$\\sigma$"
 
         elif which == "energy":
 
@@ -493,7 +521,7 @@ class DiscreteEmpiricalInterpolation(Reductor):
             energy_mu = self.report[Stage.OFFLINE][self.ENERGY_MU]
             plt.plot(energy_mu, "--")
 
-            title = f"(M)DEIM {self.name} Basis Energy"
+            title = f"(M)DEIM {self.name.title()} Basis Energy"
             ylabel = "Energy"
 
         plt.grid(True)

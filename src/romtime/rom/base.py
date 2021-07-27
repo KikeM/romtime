@@ -48,14 +48,25 @@ class Reductor:
         del self.random_state
 
     def _compute_error(self, u, ue):
+        """Compute L2 error between two arrays.
+
+        Parameters
+        ----------
+        u : np.array
+        ue : np.array
+
+        Returns
+        -------
+        l2_error : float
+        """
 
         e = u - ue
-        error = np.linalg.norm(e, ord=2)
+        l2_error = np.linalg.norm(e, ord=2)
 
         N = len(u)
-        error /= N
+        l2_error /= N
 
-        return error
+        return l2_error
 
     def add_mu(self, step, mu):
         """Add parameter vector mu to space.
@@ -72,7 +83,9 @@ class Reductor:
         idx : int
             Parameter index in the mu-space.
         """
-        mu = round_parameters(sample=mu, num=3)
+        # I temporarily remove this,
+        # it is removing viscosity when too small,
+        # mu = round_parameters(sample=mu, num=3)
         self.mu_space[step].append(mu)
 
         idx = self.mu_space[step].index(mu)

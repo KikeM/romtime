@@ -4,7 +4,7 @@ from scipy.linalg import svd
 DROP_TOLERANCE = 1e-7
 
 
-def orth(snapshots, num=None, tol=None, orthogonalize=True):
+def orth(snapshots, num=None, tol=None, normalize=True):
     """Compute orthogonalization via SVD.
 
     Parameters
@@ -28,7 +28,7 @@ def orth(snapshots, num=None, tol=None, orthogonalize=True):
         raise ValueError("You should use an array, not a list.")
 
     # L2 normalization
-    if orthogonalize == True:
+    if normalize == True:
         l2_norms = np.linalg.norm(snapshots, axis=0)
         _snapshots = np.divide(snapshots, l2_norms)
     else:
