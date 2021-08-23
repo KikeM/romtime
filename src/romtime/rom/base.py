@@ -2,23 +2,23 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-from romtime.conventions import Stage
+from romtime.conventions import ProblemType, Stage, Treewalk
 from romtime.parameters import round_parameters
 from sklearn.model_selection import ParameterSampler
 
 
 class Reductor:
 
-    FOM = "fom"
-    ROM = "rom"
+    FOM = ProblemType.FOM
+    ROM = ProblemType.ROM
 
-    BASIS_AFTER_WALK = "basis-shape-after-tree-walk"
-    BASIS_FINAL = "basis-shape-final"
-    BASIS_TIME = "basis-shape-time"
-    SPECTRUM_MU = "spectrum-mu"
-    SPECTRUM_TIME = "spectrum-time"
-    ENERGY_MU = "energy-mu"
-    ENERGY_TIME = "energy-time"
+    BASIS_AFTER_WALK = Treewalk.BASIS_AFTER_WALK
+    BASIS_FINAL = Treewalk.BASIS_FINAL
+    BASIS_TIME = Treewalk.BASIS_TIME
+    ENERGY_MU = Treewalk.ENERGY_MU
+    ENERGY_TIME = Treewalk.ENERGY_TIME
+    SPECTRUM_MU = Treewalk.SPECTRUM_MU
+    SPECTRUM_TIME = Treewalk.SPECTRUM_TIME
 
     def __init__(self, grid=None) -> None:
 
@@ -47,7 +47,8 @@ class Reductor:
         del self.summary_errors
         del self.random_state
 
-    def _compute_error(self, u, ue):
+    @staticmethod
+    def _compute_error(u, ue):
         """Compute L2 error between two arrays.
 
         Parameters
@@ -63,8 +64,10 @@ class Reductor:
         e = u - ue
         l2_error = np.linalg.norm(e, ord=2)
 
+        # -------------------------------------------------------------------------
+        # Adjust the norm by the length of the vector to obtain the error
         N = len(u)
-        l2_error /= N
+        l2_error /= np.sqrt(N)
 
         return l2_error
 

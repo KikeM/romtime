@@ -1,9 +1,10 @@
+from copy import deepcopy
 import matplotlib.pyplot as plt
 import numpy as np
 from romtime.conventions import EmpiricalInterpolation, FIG_KWARGS, RomParameters, Stage
 from romtime.rom.base import Reductor
 from romtime.rom.pod import orth
-from romtime.utils import functional_to_array, plot
+from romtime.utils import dump_pickle, functional_to_array, plot, read_pickle
 from tqdm import tqdm
 import pickle
 
@@ -56,40 +57,97 @@ class DiscreteEmpiricalInterpolation(Reductor):
         self.assemble = assemble
         self.tree_walk_params = tree_walk_params
 
-        self.Nh = int
-        self.N = int
-        self.N_V = int  # Projection basis size
-        self.VfN = None
+        self.N_V = None  # Projection basis size
         self.PT_U = None  # Interpolation matrix
-        self.sigmas = list
-        self.dofs = list
+        self.sigmas = None
+        self.dofs = None
 
-        self.Vfh = None
+        self.basis_fom = None
+        self.basis_rom = None
         self.snapshots = None
+
+        self.basis_pickle_name = self.define_basis_name()
+
+    def define_basis_name(self):
+
+        name = "_".join(self.name.lower().split())
+        type = self.TYPE.lower()
+        return f"basis_fom_{type}_{name}.pkl"
 
     def __del__(self):
 
         super().__del__()
 
-        del self.N
-        del self.Nh
         del self.N_V  # Projection basis size
-        del self.VfN
         del self.PT_U  # Interpolation matrix
         del self.sigmas
         del self.dofs
 
-        del self.Vfh
+        del self.basis_fom
+        del self.basis_rom
         del self.snapshots
 
-    def dump_basis(self, path=None):
+    def __str__(self) -> str:
+        return f"{self.TYPE} - {self.name}"
 
-        name = "_".join(self.name.lower().split())
-        type = self.TYPE.lower()
-        if self.Vfh is not None:
-            filename = f"basis_fom_{type}_{name}.pkl"
-            with open(filename, mode="wb") as fp:
-                pickle.dump(self.Vfh, fp)
+    def __repr__(self) -> str:
+        return self.__str__()
+
+    @property
+    def Nh(self):
+        return self.basis_fom.shape[0]
+
+    @property
+    def N(self):
+        return self.basis_fom.shape[1]
+
+    def copy(self):
+
+        new = self.__class__(
+            assemble=self.assemble,
+            grid=self.grid,
+            tree_walk_params=self.tree_walk_params,
+            name=self.name,
+        )
+
+        # Fill with data structures
+        if self.basis_fom is not None:
+            new.basis_fom = deepcopy(self.basis_fom)
+        if self.basis_rom is not None:
+            new.basis_rom = deepcopy(self.basis_rom)
+        if self.PT_U is not None:
+            new.PT_U = deepcopy(self.PT_U)
+        if self.dofs is not None:
+            new.dofs = deepcopy(self.dofs)
+        if self.errors_rom is not None:
+            new.errors_rom = deepcopy(self.errors_rom)
+
+        return new
+
+    def load_fom_basis(self):
+        """Load FOM collateral basis and build interpolation mesh with it."""
+
+        filename = self.basis_pickle_name
+        self.basis_fom = read_pickle(filename)
+
+        dofs, P = self.build_interpolation_mesh()
+
+        self.store_dofs(dofs)
+
+        # Store interpolation matrix
+        self.PT_U = np.matmul(P.T, self.basis_fom)
+
+        # Clean-up
+        del P
+
+    def dump_fom_basis(self, path=None):
+        """Dump FOM collateral basis."""
+
+        if self.basis_fom is None:
+            assert f"Trying to dump basis for {self.name} without building it!"
+        else:
+            filename = self.basis_pickle_name
+            dump_pickle(filename, obj=self.basis_fom)
 
     def run(self, normalize=True, mu_space=None):
         """Run DEIM offline phase.
@@ -120,18 +178,15 @@ class DiscreteEmpiricalInterpolation(Reductor):
         )
 
         # Store basis and spectrum
-        self.Vfh = Vfh
+        self.basis_fom = Vfh
         self.sigmas = sigmas
-
-        self.Nh = self.Vfh.shape[0]
-        self.N = self.Vfh.shape[1]
 
         dofs, P = self.build_interpolation_mesh()
 
         self.store_dofs(dofs)
 
         # Store interpolation matrix
-        self.PT_U = np.matmul(P.T, self.Vfh)
+        self.PT_U = np.matmul(P.T, self.basis_fom)
 
         # Clean-up
         del P
@@ -351,9 +406,9 @@ class DiscreteEmpiricalInterpolation(Reductor):
         """
         # Choose basis
         if (which is None) or (which == self.FOM):
-            Vf = self.Vfh
+            Vf = self.basis_fom
         elif which == self.ROM:
-            Vf = self.VfN
+            Vf = self.basis_rom
 
         # Local assembly on interpolation mesh
         dofs = self.dofs
@@ -427,10 +482,14 @@ class DiscreteEmpiricalInterpolation(Reductor):
         self.VfN
         """
 
-        Vfh = self.Vfh
+        Vfh = self.basis_fom
         VfN = np.matmul(V.T, Vfh)
 
-        self.VfN = VfN
+        # Previous clean-up to make sure no memory problems arise
+        if self.basis_rom is not None:
+            del self.basis_rom
+
+        self.basis_rom = VfN
 
     def build_interpolation_mesh(self):
         """Generate data for empirical interpolation using DEIM algorithm.
@@ -441,7 +500,7 @@ class DiscreteEmpiricalInterpolation(Reductor):
             DOFs at which the vectors are interpolated.
         """
 
-        Vf = self.Vfh
+        Vf = self.basis_fom
         Nh = Vf.shape[0]
 
         # Warm up

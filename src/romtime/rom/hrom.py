@@ -1,11 +1,21 @@
-import ujson
-from pathlib import Path
+from functools import partial
 from collections import defaultdict
+from pprint import pprint
+from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from romtime.conventions import FIG_KWARGS, OperatorType, RomParameters, Stage
+import ujson
+from romtime.conventions import (
+    FIG_KWARGS,
+    ProblemType,
+    StorageNames,
+    Errors,
+    OperatorType,
+    RomParameters,
+    Stage,
+    Treewalk,
+)
 from romtime.deim import (
     DiscreteEmpiricalInterpolation,
     MatrixDiscreteEmpiricalInterpolation,
@@ -15,9 +25,15 @@ from romtime.fom import HeatEquationMovingSolver, HeatEquationSolver
 from romtime.fom.nonlinear import OneDimensionalBurgers
 from romtime.rom import RomConstructor, RomConstructorMoving
 from romtime.rom.rom import RomConstructorNonlinear
+from romtime.utils import (
+    compute_rom_difference,
+    dump_csv,
+    dump_json,
+    dump_pickle,
+    read_json,
+    read_pickle,
+)
 from tqdm import tqdm
-
-import pickle
 
 
 class HyperReducedOrderModelFixed:
@@ -46,6 +62,7 @@ class HyperReducedOrderModelFixed:
 
         self.fom = OneDimensionalBurgers
         self.rom = RomConstructorNonlinear
+        self.srom = RomConstructorNonlinear
         self.deim_rhs = None
         self.mdeim_mass = None
         self.mdeim_stiffness = None
@@ -56,7 +73,6 @@ class HyperReducedOrderModelFixed:
         self.deim_runned = False
         self.rom_runned = False
 
-        self.basis = None
         self.errors = dict()
         self.summary_basis = defaultdict(dict)
         self._summary_basis = defaultdict(dict)
@@ -91,7 +107,6 @@ class HyperReducedOrderModelFixed:
         del self.deim_runned
         del self.rom_runned
 
-        del self.basis
         del self.errors
         del self._summary_basis
         del self.summary_basis
@@ -106,42 +121,42 @@ class HyperReducedOrderModelFixed:
     def mu_space(self):
         return self.rom.mu_space
 
+    @property
+    def basis(self):
+        """Reduced Order Basis (V)."""
+        return self.rom.basis
+
     def dump_mu_space(self, path=None):
-        """Write mu space to a json file.
-
-        Parameters
-        ----------
-        path : str or Path-like, optional
-        """
+        """Write ROM parameter space to a json file."""
         if path is None:
-            path = "mu_space.json"
+            path = StorageNames.MU_SPACE
 
-        with open(path, mode="w") as fp:
-            ujson.dump(self.rom.mu_space, fp)
+        dump_json(path, self.mu_space)
 
     def dump_mu_space_deim(self, path=None):
-
+        """Write N-(M)DEIM parameter space to a json file."""
         if path is None:
-            path = "mu_space_deim.json"
+            path = StorageNames.MU_SPACE_DEIM
 
-        with open(path, mode="w") as fp:
-            ujson.dump(self.mu_space_deim, fp)
+        dump_json(path, self.mu_space_deim)
 
     def dump_reduced_basis(self, path=None):
+        """Pickle ROM and S-ROM basis vectors."""
 
         if path is None:
-            path = "rb_basis.pkl"
+            path_rom = StorageNames.ROM
+            path_srom = StorageNames.SROM
 
-        with open(path, mode="wb") as fp:
-            pickle.dump(self.basis, fp)
+        dump_pickle(path_rom, self.basis)
+        dump_pickle(path_srom, self.srom.basis)
 
     def dump_validation_fom(self, path=None):
+        """Pickle validation FOM solutions."""
 
         if path is None:
-            path = "validation_solutions.pkl"
+            path = StorageNames.VALIDATION_SOLUTIONS
 
-        with open(path, mode="wb") as fp:
-            pickle.dump(self.validation_solutions, fp)
+        dump_pickle(path, self.validation_solutions)
 
     def dump_errors(self, which, path=None):
 
@@ -151,11 +166,10 @@ class HyperReducedOrderModelFixed:
         errors = self.errors
 
         is_present = which in errors
-        if is_present == False:
-            Warning("These errors ({which}) have not been computed yet.")
-            return None
-        else:
+        if is_present:
             pd.DataFrame(errors[which]).to_csv(path / f"errors_{which}.csv")
+        else:
+            raise Warning("These errors ({which}) have not been computed yet.")
 
     def dump_errors_deim(self, path=None):
 
@@ -165,7 +179,11 @@ class HyperReducedOrderModelFixed:
         errors_deim = self.summary_errors_deim
 
         for operator, errors in errors_deim.items():
-            pd.DataFrame(errors).to_csv(path / f"errors_deim_{operator.lower()}.csv")
+            df = pd.DataFrame(errors)
+            has_data = not df.empty
+            if has_data:
+                file = path / f"errors_deim_{operator.lower()}.csv"
+                df.to_csv(file)
 
     def dump_setup(self, path):
 
@@ -186,10 +204,9 @@ class HyperReducedOrderModelFixed:
     def load_validation_fom(self, path=None):
 
         if path is None:
-            path = "validation_solutions.pkl"
+            path = StorageNames.VALIDATION_SOLUTIONS
 
-        with open(path, mode="rb") as fp:
-            self.validation_solutions = pickle.load(fp)
+        self.validation_solutions = read_pickle(path)
 
     def setup(self):
         """Setup up FOM and ROM structures."""
@@ -218,6 +235,15 @@ class HyperReducedOrderModelFixed:
 
         self.rom = rom
         self.fom = fom
+
+    def project_reductors(self):
+        """Project collateral basis unto the RB space."""
+
+        rom = self.rom
+        srom = self.srom
+
+        rom.project_reductors()
+        srom.project_reductors()
 
     def setup_hyperreduction(self):
         """Prepare objects to reduce algebraic operators."""
@@ -264,7 +290,6 @@ class HyperReducedOrderModelFixed:
     def run_offline_rom(self, mu_space=None):
         """Generate Reduced Basis and project collateral basis (if any)."""
 
-        rom = self.rom
         num_snapshots = self.rom_params[RomParameters.NUM_SNAPSHOTS]
         num_basis = self.rom_params.get(RomParameters.NUM_MU, None)
 
@@ -276,42 +301,67 @@ class HyperReducedOrderModelFixed:
             TOL_MU: self.rom_params.get(TOL_MU, None),
         }
 
-        #  ---------------------------------------------------------------------
-        #  Build basis
-        # fom_solutions = rom.build_reduced_basis(
-        #     num_snapshots=num_snapshots,
-        #     mu_space=mu_space,
-        #     num_basis=num_basis,
-        #     tolerances=tolerances,
-        # )
+        # ---------------------------------------------------------------------
+        # Build Reduced Basis (RB)
+        # We build it with the S-ROM, because we are then going to remove modes
+        srom = self.srom
+        fom_solutions = srom.build_reduced_basis(
+            num_snapshots=num_snapshots,
+            mu_space=mu_space,
+            num_basis=num_basis,
+            tolerances=tolerances,
+        )
 
-        # self.basis = rom.basis
-        # self.validation_solutions = fom_solutions
+        # Truncate basis
+        n = self.rom_params[RomParameters.SROM_TRUNCATE]
+        rom = srom.truncate(n=n)
+        rom.name = "ROM"
+        self.rom = rom
 
-        #  ---------------------------------------------------------------------
-        #  Read basis
-        print("Loading RB Basis from disk ...")
-        with open("rb_basis.pkl", mode="rb") as fp:
-            basis = pickle.load(fp)
+        self.validation_solutions = fom_solutions
 
-        self.basis = basis.copy()
-        rom.basis = basis.copy()
+    def start_from_existing_basis(self):
 
-        with open("mu_space.json", mode="r") as fp:
-            mu_space = ujson.load(fp)
-
-        mu_space[Stage.ONLINE] = []
-        mu_space[Stage.VALIDATION] = []
-        rom.mu_space = mu_space.copy()
-
+        # ---------------------------------------------------------------------
+        # For validation tests
         self.load_validation_fom()
 
-        # Project the operators
-        if self.deim_runned:
-            rom.project_reductors()
+        # ---------------------------------------------------------------------
+        # Read ROB basis
+        print("Loading RB Basis from disk ...")
+
+        mu_space = read_json(StorageNames.MU_SPACE)
+
+        # ROM
+        # rom = self.rom
+        # basis_rom = read_pickle(StorageNames.ROM)
+        # rom.load_from_basis(basis=basis_rom, mu_space=mu_space)
+        # del basis_rom
+
+        # S-ROM
+        srom = self.srom
+        basis_srom = read_pickle(StorageNames.SROM)
+        N_srom = self.rom_params[RomParameters.SROM_KEEP]
+        basis_srom = basis_srom[:, :N_srom]
+        srom.load_from_basis(basis=basis_srom, mu_space=mu_space)
+        del basis_srom
+
+        self.rom = srom.truncate(self.rom_params[RomParameters.SROM_TRUNCATE])
+
+        print(f"S-ROM size: {self.srom.basis.shape}")
+        print(f"ROM size: {self.rom.basis.shape}")
+
+        # ---------------------------------------------------------------------
+        # Read DEIM basis
+        self.deim_rhs.load_fom_basis()
+        self.mdeim_mass.load_fom_basis()
+        self.mdeim_stiffness.load_fom_basis()
+        self.mdeim_convection.load_fom_basis()
+        self.mdeim_nonlinear.load_fom_basis()
+        self.mdeim_nonlinear_lifting.load_fom_basis()
 
     def run_offline_hyperreduction(self, mu_space=None, evaluate=True):
-        """Generate collateral basis for algebraic operators."""
+        """Generate collateral basis for linear algebraic operators."""
 
         mdeim_stiffness = self.mdeim_stiffness
         mdeim_mass = self.mdeim_mass
@@ -355,14 +405,14 @@ class HyperReducedOrderModelFixed:
         self.rom.solve(mu, step)
 
     def evaluate_validation(self):
-        """ROM evaluation for training set of parameters."""
+        """(H)ROM evaluation for training parameter set."""
 
         rom = self.rom
         space = rom.mu_space[Stage.OFFLINE]
         self._evaluate(which=Stage.VALIDATION, mu_space=space)
 
     def evaluate_online(self, params, rnd=None):
-        """Online evaluation for a random set of parameters.
+        """(H)ROM online evaluation for a random parameter set.
 
         Parameters
         ----------
@@ -382,14 +432,33 @@ class HyperReducedOrderModelFixed:
         # Evaluate
         self._evaluate(which=Stage.ONLINE, mu_space=space)
 
+    def evaluate_deim(self):
+        """Evaluate all DEIM models."""
+
+        mu_space = self.mu_space[Stage.OFFLINE]
+        self.evaluate_deim_model(object=self.deim_rhs, mu_space=mu_space)
+
+        self.evaluate_deim_model(object=self.mdeim_mass, mu_space=mu_space)
+        self.evaluate_deim_model(object=self.mdeim_stiffness, mu_space=mu_space)
+        self.evaluate_deim_model(object=self.mdeim_convection, mu_space=mu_space)
+        self.evaluate_deim_model(object=self.mdeim_nonlinear_lifting, mu_space=mu_space)
+
+        self.evaluate_deim_model(object=self.mdeim_nonlinear, mu_space=mu_space)
+
     def _evaluate(self, which, mu_space=None):
-        """Evaluation for a set of parameters."""
+        """(H)ROM evaluation for a set of parameters."""
 
         fom = self.fom
         rom = self.rom
+        srom = self.srom
 
         if fom.exact_solution is None:
             rom_fom_errors = dict()
+
+        mu_space = list(mu_space)
+
+        print(f"Evaluation for {which}")
+        pprint(mu_space)
 
         compute_error = rom._compute_error
         desc = f"(HROM) {which.upper()} evaluation"
@@ -398,65 +467,88 @@ class HyperReducedOrderModelFixed:
             # -----------------------------------------------------------------
             # Solve ROM
             idx_mu = rom.solve(mu=mu, step=which)
+            srom.solve(mu=mu, step=which)
 
             # -----------------------------------------------------------------
             # Compare against FOM
             if which == Stage.VALIDATION:
+                # Recover from validation storage
                 uh_fom = self.validation_solutions[idx_mu]
             else:
+                # Online stage requires actual simulation
                 fom.setup()
                 fom.update_parametrization(mu)
                 fom.solve()
                 uh_fom = fom._solutions
 
+            # Compute errors
             uh_rom = rom._solution
+            uh_srom = srom._solution
 
             nt = uh_fom.shape[1]
-            errors = [
+            errors_rom = [
                 compute_error(uh_fom[:, idx], uh_rom[:, idx]) for idx in range(nt)
             ]
-            errors = np.array(errors)
-            rom_fom_errors.update({idx_mu: np.array(errors)})
+            errors_srom = [
+                compute_error(uh_fom[:, idx], uh_srom[:, idx]) for idx in range(nt)
+            ]
+            # Convert to array format
+            errors_rom = np.array(errors_rom)
+            errors_srom = np.array(errors_srom)
 
-            # -------------------------------------------------------------
+            # -----------------------------------------------------------------
+            # Compute error estimator
+            uNs = rom.solutions_rom
+            uNs_srom = srom.solutions_rom
+
+            V_srom = srom.basis
+
+            estimator = np.array([])
+            for nt in range(uNs.shape[1]):
+                uN = uNs[:, nt]
+                uN_scf = uNs_srom[:, nt]
+                error = compute_rom_difference(uN=uN, uN_srom=uN_scf, V_srom=V_srom)
+                estimator = np.append(estimator, [error])
+
+            # -----------------------------------------------------------------
+            # Prepare errors payload
+            payload_errors = {
+                Errors.ESTIMATOR: estimator,
+                Errors.ROM: errors_rom,
+                Errors.SACRIFICIAL: errors_srom,
+            }
+
+            rom_fom_errors.update({idx_mu: payload_errors})
+
+            # -----------------------------------------------------------------
             # Compute FOM solution
             if fom.RUNTIME_PROCESS & (which == Stage.ONLINE):
-                name_probes = f"probes_{which}_fom_{idx_mu}"
-                fom.plot_probes(show=False, save=name_probes)
+                name_probes = f"probes_{which}_fom_{idx_mu}.csv"
+                fom.save_probes(name=name_probes)
 
             # Compute ROM solution
             # TODO: Pending! I have problems with function evaluations after I
             # use interpolate.
 
-            # -------------------------------------------------------------
+            # -----------------------------------------------------------------
             # Compute mass conservation
             timesteps = rom.timesteps[1:]
 
             # ROM
-            name_rom = f"mass_conservation_{which}_rom_{idx_mu}"
             rom_sols = uh_rom.T
-            fom.compute_mass_conservation(
-                mu=mu,
-                ts=timesteps,
-                solutions=rom_sols,
-                figure=True,
-                save=name_rom,
-                show=False,
-                title="ROM Solution",
+            output_rom = fom.compute_mass_conservation(
+                mu=mu, ts=timesteps, solutions=rom_sols, which=ProblemType.ROM
             )
+            name_rom = f"mass_conservation_{which}_rom_{idx_mu}.csv"
+            dump_csv(name_rom, obj=output_rom)
 
             # FOM
-            name_fom = f"mass_conservation_{which}_fom_{idx_mu}"
             fom_sols = uh_fom.T
-            fom.compute_mass_conservation(
-                mu=mu,
-                ts=timesteps,
-                solutions=fom_sols,
-                figure=True,
-                save=name_fom,
-                show=False,
-                title="FOM Solution",
+            output_fom = fom.compute_mass_conservation(
+                mu=mu, ts=timesteps, solutions=fom_sols, which=ProblemType.FOM
             )
+            name_fom = f"mass_conservation_{which}_fom_{idx_mu}.csv"
+            dump_csv(name_fom, obj=output_fom)
 
         if fom.exact_solution is None:
             self.errors[which] = rom_fom_errors
@@ -479,71 +571,41 @@ class HyperReducedOrderModelFixed:
         ENERGY_MU = rom.ENERGY_MU
         OFFLINE = Stage.OFFLINE
 
+        # ---------------------------------------------------------------------
+        # ROM summary
         report = rom.report[OFFLINE]
-        summary_basis["reduced-basis"][BASIS_WALK] = report[BASIS_WALK]
-        summary_basis["reduced-basis"][BASIS_FINAL] = report[BASIS_FINAL]
-        summary_sig["reduced-basis"][SPECTRUM_MU] = report[SPECTRUM_MU]
-        summary_energy["reduced-basis"][ENERGY_MU] = report[ENERGY_MU]
+        REDUCED_BASIS = OperatorType.REDUCED_BASIS
+        summary_basis[REDUCED_BASIS][BASIS_WALK] = report[BASIS_WALK]
+        summary_basis[REDUCED_BASIS][BASIS_FINAL] = report[BASIS_FINAL]
+        summary_sig[REDUCED_BASIS][SPECTRUM_MU] = report[SPECTRUM_MU]
+        summary_energy[REDUCED_BASIS][ENERGY_MU] = report[ENERGY_MU]
 
-        if self.mdeim_mass:
-            report = self.mdeim_mass.report[OFFLINE]
-            MASS = OperatorType.MASS
-            summary_basis[MASS][BASIS_WALK] = report[BASIS_WALK]
-            summary_basis[MASS][BASIS_FINAL] = report[BASIS_FINAL]
-            summary_sig[MASS][SPECTRUM_MU] = report[SPECTRUM_MU]
-            summary_energy[MASS][ENERGY_MU] = report[ENERGY_MU]
-            summary_errors_deim[MASS] = self.mdeim_mass.errors_rom.copy()
-            mu_space_deim[MASS] = self.mdeim_mass.mu_space
-        if self.mdeim_stiffness:
-            report = self.mdeim_stiffness.report[OFFLINE]
-            STIFFNESS = OperatorType.STIFFNESS
-            summary_basis[STIFFNESS][BASIS_WALK] = report[BASIS_WALK]
-            summary_basis[STIFFNESS][BASIS_FINAL] = report[BASIS_FINAL]
-            summary_sig[STIFFNESS][SPECTRUM_MU] = report[SPECTRUM_MU]
-            summary_energy[STIFFNESS][ENERGY_MU] = report[ENERGY_MU]
-            summary_errors_deim[STIFFNESS] = self.mdeim_stiffness.errors_rom.copy()
-            mu_space_deim[STIFFNESS] = self.mdeim_stiffness.mu_space
-        if self.mdeim_convection:
-            report = self.mdeim_convection.report[OFFLINE]
-            CONVECTION = OperatorType.CONVECTION
-            summary_basis[CONVECTION][BASIS_WALK] = report[BASIS_WALK]
-            summary_basis[CONVECTION][BASIS_FINAL] = report[BASIS_FINAL]
-            summary_sig[CONVECTION][SPECTRUM_MU] = report[SPECTRUM_MU]
-            summary_energy[CONVECTION][ENERGY_MU] = report[ENERGY_MU]
-            summary_errors_deim[CONVECTION] = self.mdeim_convection.errors_rom.copy()
-            mu_space_deim[CONVECTION] = self.mdeim_convection.mu_space
-        if self.mdeim_nonlinear:
-            report = self.mdeim_nonlinear.report[OFFLINE]
-            NONLINEAR = OperatorType.NONLINEAR
-            summary_basis[NONLINEAR][BASIS_WALK] = report[BASIS_WALK]
-            summary_basis[NONLINEAR][BASIS_FINAL] = report[BASIS_FINAL]
-            summary_sig[NONLINEAR][SPECTRUM_MU] = report[SPECTRUM_MU]
-            summary_energy[NONLINEAR][ENERGY_MU] = report[ENERGY_MU]
-            summary_errors_deim[NONLINEAR] = self.mdeim_nonlinear.errors_rom.copy()
-            mu_space_deim[NONLINEAR] = self.mdeim_nonlinear.mu_space
-        if self.mdeim_nonlinear_lifting:
-            report = self.mdeim_nonlinear_lifting.report[OFFLINE]
-            NONLINEAR_LIFTING = OperatorType.NONLINEAR_LIFTING
-            summary_basis[NONLINEAR_LIFTING][BASIS_WALK] = report[BASIS_WALK]
-            summary_basis[NONLINEAR_LIFTING][BASIS_FINAL] = report[BASIS_FINAL]
-            summary_sig[NONLINEAR_LIFTING][SPECTRUM_MU] = report[SPECTRUM_MU]
-            summary_energy[NONLINEAR_LIFTING][ENERGY_MU] = report[ENERGY_MU]
-            summary_errors_deim[
-                NONLINEAR_LIFTING
-            ] = self.mdeim_nonlinear_lifting.errors_rom.copy()
-            mu_space_deim[NONLINEAR_LIFTING] = self.mdeim_nonlinear_lifting.mu_space
-        if self.deim_rhs:
-            report = self.deim_rhs.report[OFFLINE]
-            RHS = OperatorType.RHS
-            summary_basis[RHS][BASIS_WALK] = report[BASIS_WALK]
-            summary_basis[RHS][BASIS_FINAL] = report[BASIS_FINAL]
-            summary_sig[RHS][SPECTRUM_MU] = report[SPECTRUM_MU]
-            summary_energy[RHS][ENERGY_MU] = report[ENERGY_MU]
-            summary_errors_deim[RHS] = self.deim_rhs.errors_rom.copy()
-            mu_space_deim[RHS] = self.deim_rhs.mu_space
+        # ---------------------------------------------------------------------
+        # Algebraic operators summary
+        generate_operator_summary = partial(
+            self.generate_operator_summary,
+            basis=summary_basis,
+            sigma=summary_sig,
+            energy=summary_energy,
+            errors_deim=summary_errors_deim,
+            mu_space_deim=mu_space_deim,
+        )
+
+        algebraic_operators = [
+            self.deim_rhs,
+            self.mdeim_mass,
+            self.mdeim_stiffness,
+            self.mdeim_nonlinear,
+            self.mdeim_convection,
+            self.mdeim_nonlinear_lifting,
+        ]
+        for operator in algebraic_operators:
+            if operator is not None:
+                generate_operator_summary(operator)
 
         self.summary_basis = pd.DataFrame(summary_basis).T
 
+        # ---------------------------------------------------------------------
         # Integration errors
         summary_errors = defaultdict(dict)
         for idx, error in rom.errors.items():
@@ -554,98 +616,58 @@ class HyperReducedOrderModelFixed:
 
         self.summary_errors = pd.DataFrame(summary_errors).T
 
-    def plot_spectrums(self, save=None, new=True, show=True):
-        """Plot reduction spectrums.
+    @staticmethod
+    def generate_operator_summary(
+        operator,
+        basis,
+        sigma,
+        energy,
+        errors_deim,
+        mu_space_deim,
+    ):
+        """Update summary dictionary with operator DEIM results.
 
         Parameters
         ----------
-        save : str, optional
-            Figure name, by default None
-        new : bool, optional
-            Create new figure, by default True
+        operator : DiscreteEmpiricalInterpolationMethod-like
+        basis : dict
+        sigma : dict
+        energy : dict
+        errors_deim : dict
+        mu_space_deim : dict
         """
 
-        if new:
-            plt.figure()
+        BASIS_WALK = Treewalk.BASIS_AFTER_WALK
+        BASIS_FINAL = Treewalk.BASIS_FINAL
+        SPECTRUM_MU = Treewalk.SPECTRUM_MU
+        ENERGY_MU = Treewalk.ENERGY_MU
+        OFFLINE = Stage.OFFLINE
+        NAME = operator.name
+        report = operator.report[OFFLINE]
 
-        SPECTRUM_MU = self.rom.SPECTRUM_MU
+        # Treewalk results
+        basis[NAME][BASIS_WALK] = report[BASIS_WALK]
+        basis[NAME][BASIS_FINAL] = report[BASIS_FINAL]
+        sigma[NAME][SPECTRUM_MU] = report[SPECTRUM_MU]
+        energy[NAME][ENERGY_MU] = report[ENERGY_MU]
 
-        summary_sigmas = self.summary_sigmas
+        errors_deim[NAME] = operator.errors_rom.copy()
+        mu_space_deim[NAME] = operator.mu_space
 
-        for element, sigmas_dict in summary_sigmas.items():
-            sigma = sigmas_dict[SPECTRUM_MU]
-            if sigma is None:
-                continue
-            sigma = np.log10(sigma)
-            element = element.title()
-            plt.plot(sigma, label=element)
+    def evaluate_deim_model(self, object, mu_space):
+        """Evaluate individual DEIM model.
 
-        plt.xlabel("Up to n-th basis element")
-        plt.ylabel("$\\log (\\sigma)$")
-        plt.title("Spectrum decay in the parameter space")
-        plt.legend()
-        plt.grid(True)
+        Parameters
+        ----------
+        object : DiscreteEmpiricalInterpolationMethod-like
+        mu_space : dict
+        """
+        params = object.tree_walk_params
 
-        if save:
-            plt.savefig(save + ".png", **self.FIG_KWARGS)
+        n_online = params.get(RomParameters.NUM_ONLINE, None)
+        timesteps = params["ts"]
 
-        if show:
-            plt.show()
-
-    def plot_energy(self, save=None, show=True):
-
-        ENERGY_MU = self.rom.ENERGY_MU
-
-        summary_energy = self.summary_energy
-
-        plt.figure()
-
-        for element, energy in summary_energy.items():
-            sigma = energy[ENERGY_MU]
-            element = element.title()
-            plt.plot(sigma, label=element)
-
-        plt.xlabel("Up to n-th basis element")
-        plt.ylabel("Ratio")
-        plt.title("Total POD Energy Ratio")
-        plt.legend()
-        plt.grid(True)
-
-        if save:
-            plt.savefig(save + ".png", **self.FIG_KWARGS)
-        if show:
-            plt.show()
-
-    def plot_errors(
-        self,
-        which=Stage.ONLINE,
-        save=None,
-        new=True,
-        label=None,
-        show=True,
-    ):
-
-        if new:
-            plt.figure()
-
-        rom = self.rom
-
-        errors = self.errors[which]
-
-        for idx, error in errors.items():
-            error = np.log10(error)
-            plt.plot(rom.timesteps[1:], error, linewidth=1.0, alpha=0.85, label=label)
-
-        plt.xlabel("t")
-        plt.ylabel("log10 Error (L2)")
-        plt.title(f"{which.capitalize()} Errors")
-        plt.legend()
-        plt.grid(True)
-        if show:
-            plt.show()
-        if save:
-            plt.savefig(save + ".png", **self.FIG_KWARGS)
-            plt.close()
+        object.evaluate(ts=timesteps, num=n_online, mu_space=mu_space)
 
     def _run_deim(
         self,
@@ -672,8 +694,7 @@ class HyperReducedOrderModelFixed:
 
         # Build collateral basis
         object.run(mu_space=mu_space)
-
-        object.dump_basis()
+        object.dump_fom_basis()
 
         if is_mdeim:
             params = self.mdeim_params
@@ -682,14 +703,11 @@ class HyperReducedOrderModelFixed:
 
         # Online evaluation
         if evaluate:
-            n_online = params.get(RomParameters.NUM_ONLINE, None)
-            timesteps = params["ts"]
-
-            object.evaluate(ts=timesteps, num=n_online, mu_space=mu_space)
+            self.evaluate_deim_model(object=object, mu_space=mu_space)
 
         # Include the reduction for the algebraic operators
-        rom = self.rom
-        rom.add_hyper_reductor(reductor=object, which=which)
+        for rom in [self.rom, self.srom]:
+            rom.add_hyper_reductor(reductor=object, which=which)
 
     def _run_mdeim(
         self,
@@ -768,7 +786,7 @@ class HyperReducedOrderModelMoving(HyperReducedOrderModelFixed):
         # ---------------------------------------------------------------------
         # Reduced Order Model
         # ---------------------------------------------------------------------
-        rom = RomConstructorMoving(fom=fom, grid=self.grid)
+        rom = RomConstructorMoving(fom=fom, grid=self.grid, name="ROM")
         rom.setup(rnd=rnd)
 
         self.rom = rom
@@ -798,7 +816,11 @@ class HyperReducedOrderModelMoving(HyperReducedOrderModelFixed):
         self.mdeim_convection = mdeim_convection
 
     def run_offline_hyperreduction(self, mu_space=None, evaluate=True):
-        """Generate collateral basis for algebraic operators."""
+        """Generate collateral basis for algebraic operators.
+
+        - Linear
+        - Convection
+        """
 
         super().run_offline_hyperreduction(mu_space=mu_space, evaluate=evaluate)
 
@@ -867,9 +889,14 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
         # ---------------------------------------------------------------------
         # Reduced Order Model
         # ---------------------------------------------------------------------
-        rom = RomConstructorNonlinear(fom=fom, grid=self.grid)
+        rom = RomConstructorNonlinear(fom=fom, grid=self.grid, name="ROM")
         rom.setup(rnd=rnd)
 
+        # Extended S-ROM to compute error estimator
+        srom = RomConstructorNonlinear(fom=fom, grid=self.grid, name="S-ROM")
+        srom.setup(rnd=rnd)
+
+        self.srom = srom
         self.rom = rom
         self.fom = fom
 
@@ -892,13 +919,6 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
             tree_walk_params=self.mdeim_params,
         )
 
-        mdeim_nonlinear = MatrixDiscreteEmpiricalInterpolationNonlinear(
-            name=OperatorType.NONLINEAR,
-            assemble=fom.assemble_nonlinear,
-            grid=grid,
-            tree_walk_params=self.mdeim_nonlinear_params,
-        )
-
         mdeim_nonlinear_lifting = MatrixDiscreteEmpiricalInterpolation(
             name=OperatorType.NONLINEAR_LIFTING,
             assemble=fom.assemble_nonlinear_lifting,
@@ -906,41 +926,63 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
             tree_walk_params=self.mdeim_params,
         )
 
+        mdeim_nonlinear = MatrixDiscreteEmpiricalInterpolationNonlinear(
+            name=OperatorType.NONLINEAR,
+            assemble=fom.assemble_nonlinear,
+            grid=grid,
+            tree_walk_params=self.mdeim_nonlinear_params,
+        )
+
         mdeim_convection.setup(rnd=rnd)
         mdeim_nonlinear_lifting.setup(rnd=rnd)
         mdeim_nonlinear.setup(rnd=rnd, V=fom.V)
 
         self.mdeim_convection = mdeim_convection
-        self.mdeim_nonlinear = mdeim_nonlinear
         self.mdeim_nonlinear_lifting = mdeim_nonlinear_lifting
+        self.mdeim_nonlinear = mdeim_nonlinear
 
     def run_offline_hyperreduction(self, mu_space=None, u_n=None, evaluate=True):
-        """Generate collateral basis for algebraic operators."""
+        """Generate collateral basis for algebraic operators.
+
+        - Linear
+        - Convection
+        - Nonlinear
+        """
 
         super().run_offline_hyperreduction(mu_space=mu_space, evaluate=evaluate)
 
-        mdeim_convection = self.mdeim_convection
-        mdeim_nonlinear = self.mdeim_nonlinear
-        mdeim_nonlinear_lifting = self.mdeim_nonlinear_lifting
-
-        if u_n is None:
-            u_n = self.basis
-
         if self.models[OperatorType.CONVECTION]:
+
+            mdeim_convection = self.mdeim_convection
+
             self._run_mdeim(
                 object=mdeim_convection,
                 mu_space=mu_space,
                 evaluate=evaluate,
                 which=OperatorType.CONVECTION,
             )
+
         if self.models[OperatorType.NONLINEAR_LIFTING]:
+
+            mdeim_nonlinear_lifting = self.mdeim_nonlinear_lifting
+
             self._run_mdeim(
                 object=mdeim_nonlinear_lifting,
                 mu_space=mu_space,
                 evaluate=evaluate,
                 which=OperatorType.NONLINEAR_LIFTING,
             )
+
+        # ---------------------------------------------------------------------
+        # Nonlinear operator
         if self.models[OperatorType.NONLINEAR]:
+
+            mdeim_nonlinear = self.mdeim_nonlinear
+
+            # Use ROB basis vectors
+            if u_n is None:
+                u_n = self.basis
+
             self._run_mdeim_nonlinear(
                 object=mdeim_nonlinear,
                 mu_space=mu_space,
@@ -959,7 +1001,7 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
         mu_space: list,
         evaluate=False,
     ):
-        """Generate N-MDEIM, feeding it with the FOM reduced basis.
+        """Generate N-MDEIM.
 
         Parameters
         ----------
@@ -967,22 +1009,18 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
         u_n : np.array
         which : str
         mu_space : list
-        evaluate : bool, optional
-            , by default False
+        evaluate : bool
+            By default False.
         """
 
         # Build collateral basis
         object.run(u_n=u_n, mu_space=mu_space)
-
-        object.dump_basis()
+        object.dump_fom_basis()
 
         # Online evaluation
         if evaluate:
-            n_online = self.mdeim_params.get(RomParameters.NUM_ONLINE, None)
-            timesteps = self.mdeim_params["ts"]
-
-            object.evaluate(ts=timesteps, num=n_online, mu_space=mu_space)
+            self.evaluate_deim_model(object=object, mu_space=mu_space)
 
         # Include the reduction for the algebraic operators
-        rom = self.rom
-        rom.add_hyper_reductor(reductor=object, which=which)
+        for rom in [self.rom, self.srom]:
+            rom.add_hyper_reductor(reductor=object, which=which)

@@ -72,7 +72,6 @@ class OneDimensionalSolver(ABC):
         Lt=None,
         dLt_dt=None,
         filename=None,
-        poly_type=None,
         degrees=None,
         project_u0=False,
         exact_solution=None,
@@ -89,7 +88,6 @@ class OneDimensionalSolver(ABC):
         self.Lt = Lt
         self.dLt_dt = dLt_dt
 
-        self.poly_type = poly_type
         self.degrees = degrees
 
         self.project_u0 = project_u0
@@ -128,7 +126,6 @@ class OneDimensionalSolver(ABC):
         del self.u0
         del self.Lt
         del self.dLt_dt
-        del self.poly_type
         del self.degrees
         del self.project_u0
         del self._scale
@@ -270,7 +267,7 @@ class OneDimensionalSolver(ABC):
         L0 = self.domain[self.L0]
 
         mesh = fenics.IntervalMesh(self.domain[self.NX], 0.0, L0)
-        V = fenics.FunctionSpace(mesh, self.poly_type, self.degrees)
+        V = fenics.FunctionSpace(mesh, "P", self.degrees)
         dofmap = V.dofmap()
 
         # Galerkin projection
@@ -703,12 +700,17 @@ class OneDimensionalSolver(ABC):
         t = 0.0
         mu = self.mu
 
+        # ---------------------------------------------------------------------
+        g0 = self.create_lifting_operator(mu=mu, t=0.0, L=self.L, only_g=True)
         # Obtain initial solution in the mesh
+        # TODO: am I missing the initial condition of the lifting?
         u0 = self.u0
         if self.project_u0:
             u_n = fenics.project(u0, V)
         else:
-            u_n = self.interpolate_func(u0, V, mu=mu, t=t)
+            u_n = self.interpolate_func(u0, V, mu=mu, t=0.0)
+        g0 = self.interpolate_func(g0, V, mu=mu, t=0.0)
+        u_n.assign(u_n - g0)
 
         if self.BDF_SCHEME == BDF.TWO:
             u_n1 = fenics.Function(V)
@@ -775,14 +777,10 @@ class OneDimensionalSolver(ABC):
             u_n.assign(uh)
 
             # Prepare lifting function
-            if self.Lt:
-                self.move_mesh(mu=mu, t=t)
-                g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
-
-                domain_x.append(self.x)
-                self.move_mesh(back=True)
-            else:
-                g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
+            self.move_mesh(mu=mu, t=t)
+            g = self.create_lifting_operator(mu=mu, t=t, L=self.L, only_g=True)
+            domain_x.append(self.x)
+            self.move_mesh(back=True)
 
             # Interpolate lifting and add to build actual solution
             gh = self.interpolate_func(g, V, mu=mu, t=t)
