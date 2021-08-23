@@ -1,6 +1,7 @@
 import fenics
 import numpy as np
 from romtime.fom.nonlinear import OneDimensionalBurgers
+from romtime.rom.hrom import HyperReducedOrderModelMoving
 
 
 def define_piston_problem(L=None, nx=None, tf=None, nt=None):
@@ -25,7 +26,7 @@ def define_piston_problem(L=None, nx=None, tf=None, nt=None):
 
     # -------------------------------------------------------------------------
     # Initial condition
-    u0 = fenics.Constant(0.0)
+    u0 = fenics.Expression("0.0", degree=1)
 
     # -------------------------------------------------------------------------
     # Moving boundary function

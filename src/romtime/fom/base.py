@@ -7,7 +7,7 @@ import fenics
 import matplotlib.pyplot as plt
 import numpy as np
 from adjustText import adjust_text
-from romtime.conventions import FIG_KWARGS
+from romtime.conventions import BDF, Domain, FIG_KWARGS
 from romtime.utils import bilinear_to_csr, eliminate_zeros, function_to_array
 from scipy.sparse import find as get_nonzero_entries
 from tqdm import tqdm
@@ -44,19 +44,23 @@ def move_mesh(assemble):
 
 class OneDimensionalSolver(ABC):
 
+    RUNTIME_PROCESS = True
+
     DIRICHLET_ENTRY = 1.0
     DIRICHLET_VALUE = 0.0
 
-    NX = "nx"
-    NT = "nt"
-    L0 = "L0"
-    T = "T"
+    NX = Domain.NX
+    NT = Domain.NT
+    L0 = Domain.L0
+    T = Domain.T
 
     B0 = "b0"
     BL = "bL"
 
     DB0_DT = "db0_dt"
     DBL_DT = "dbL_dt"
+
+    BDF_SCHEME = BDF.TWO
 
     def __init__(
         self,
@@ -170,6 +174,12 @@ class OneDimensionalSolver(ABC):
     def scale_solutions(self):
         return 1.0
 
+    @property
+    def dt(self):
+        # Time domain step size
+        dt = self.domain[self.T] / self.domain[self.NT]
+        return dt
+
     @staticmethod
     def dict_to_array(my_dict):
         return np.array(
@@ -244,6 +254,9 @@ class OneDimensionalSolver(ABC):
 
         L_t = self.Lt(t=t, **mu)
         self._move_mesh(scale=L_t)
+
+    def runtime_process(self, u):
+        pass
 
     def setup(self):
         """Create FEM structures.
@@ -697,9 +710,13 @@ class OneDimensionalSolver(ABC):
         else:
             u_n = self.interpolate_func(u0, V, mu=mu, t=t)
 
+        if self.BDF_SCHEME == BDF.TWO:
+            u_n1 = fenics.Function(V)
+        else:
+            u_n1 = None
+
         # Time domain step size
-        dt = self.domain[self.T] / self.domain[self.NT]
-        self.dt = dt
+        dt = self.dt
 
         # Prepare iteration
         snapshots = dict()
@@ -725,8 +742,12 @@ class OneDimensionalSolver(ABC):
             desc="(FOM) Time integration",
             leave=False,
             miniters=100,
-            mininterval=1.0,
+            mininterval=5.0,
         ):
+
+            bdf = 1.0
+            if (self.BDF_SCHEME == BDF.TWO) & (timestep > 0):
+                bdf = 1.5
 
             # Update time
             t += dt
@@ -737,10 +758,10 @@ class OneDimensionalSolver(ABC):
             # Assemble algebraic problem
             # -----------------------------------------------------------------
             # LHS
-            Mh_mat, Kh_mat = self.assemble_system(mu, t, u_n)
+            Mh_mat, Kh_mat = self.assemble_system(mu, t, u_n, bdf)
 
             # RHS
-            bh_vec = self.assemble_system_rhs(mu, t, u_n, Mh_mat)
+            bh_vec = self.assemble_system_rhs(mu, t, Mh_mat, u_n, u_n1)
 
             # -----------------------------------------------------------------
             # Solve problem
@@ -749,6 +770,8 @@ class OneDimensionalSolver(ABC):
             solver.solve(Kh_mat, U, bh_vec)
 
             # Update solution
+            if self.BDF_SCHEME == BDF.TWO:
+                u_n1.assign(u_n)
             u_n.assign(uh)
 
             # Prepare lifting function
@@ -764,6 +787,9 @@ class OneDimensionalSolver(ABC):
             # Interpolate lifting and add to build actual solution
             gh = self.interpolate_func(g, V, mu=mu, t=t)
             uc_h.assign(uh + gh)
+
+            if self.RUNTIME_PROCESS:
+                self.runtime_process(u=uc_h)
 
             # -----------------------------------------------------------------
             # Collect solutions
@@ -782,9 +808,10 @@ class OneDimensionalSolver(ABC):
                 error = self._compute_error(u=uc_h, ue=ue_h)
                 errors[t] = error
 
+        # ---------------------------------------------------------------------
         # Save results
         self.timesteps = timesteps
-        self.solutions = solutions
+        self.solutions = solutions.copy()
         self.snapshots = snapshots
 
         # Collect snapshots as actual arrays
@@ -802,7 +829,7 @@ class OneDimensionalSolver(ABC):
             self.exact = exact
 
     @abstractmethod
-    def assemble_system_rhs(self, mu, t, u_n, Mh_mat):
+    def assemble_system_rhs(self, mu, Mh_mat, t, u_n, u_n1):
         pass
 
     @abstractmethod
@@ -841,7 +868,7 @@ class OneDimensionalSolver(ABC):
             return on_boundary
 
         # snapshots boundary conditions
-        zero_dirichlet = fenics.Constant(0.0)
+        zero_dirichlet = 0.0
         bc = fenics.DirichletBC(V, zero_dirichlet, boundary)
 
         return bc
@@ -917,6 +944,7 @@ class OneDimensionalSolver(ABC):
 
         if save:
             plt.savefig(save, **FIG_KWARGS)
+            plt.close()
         else:
             plt.show()
 
@@ -974,7 +1002,7 @@ class OneDimensionalSolver(ABC):
         adjust_text(texts)
         plt.grid()
         plt.xlabel("$x$")
-        plt.ylabel("$\hat{u}(x,t)$")
+        plt.ylabel("$\\hat{u}(x,t)$")
         plt.title("Snapshots")
         if save:
             plt.savefig(save, **FIG_KWARGS)

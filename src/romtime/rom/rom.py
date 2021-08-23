@@ -2,10 +2,12 @@ from functools import partial, reduce
 
 import fenics
 import numpy as np
+from romtime.fom.nonlinear import OneDimensionalBurgers
 from dolfin.cpp.la import Matrix, Vector
-from romtime.conventions import RomParameters, OperatorType, Stage
+from romtime.conventions import BDF, RomParameters, OperatorType, Stage
 from romtime.fom.base import OneDimensionalSolver
 from romtime.utils import (
+    array_to_function,
     bilinear_to_csr,
     function_to_array,
     functional_to_array,
@@ -36,6 +38,7 @@ class RomConstructor(Reductor):
 
         self.timesteps = dict()
         self.solutions = dict()
+        self._solution = np.array
 
         self.errors = dict()
         self.exact = dict()
@@ -47,6 +50,8 @@ class RomConstructor(Reductor):
         self.mdeim_Mh = None
         self.mdeim_Ah = None
         self.mdeim_Ch = None
+        self.mdeim_Nh = None
+        self.mdeim_Nh_hat = None
 
     def __del__(self):
 
@@ -66,6 +71,12 @@ class RomConstructor(Reductor):
         del self.mdeim_Mh
         del self.mdeim_Ah
         del self.mdeim_Ch
+        del self.mdeim_Nh
+        del self.mdeim_Nh_hat
+
+    @property
+    def N(self):
+        return self.basis.shape[1]
 
     def to_fom_vector(self, uN):
         """Build FOM vector from ROM basis functions.
@@ -174,6 +185,10 @@ class RomConstructor(Reductor):
             self.mdeim_Ah = reductor
         elif which == OperatorType.CONVECTION:
             self.mdeim_Ch = reductor
+        elif which == OperatorType.NONLINEAR:
+            self.mdeim_Nh = reductor
+        elif which == OperatorType.NONLINEAR_LIFTING:
+            self.mdeim_Nh_hat = reductor
         else:
             raise NotImplementedError(f"Which is this reductor? {which}")
 
@@ -182,19 +197,23 @@ class RomConstructor(Reductor):
 
         reduced_basis = self.basis
 
-        if self.deim_fh is not None:
+        if self.deim_fh:
             self.deim_fh.project_basis(V=reduced_basis)
-        if self.deim_fgh is not None:
+        if self.deim_fgh:
             self.deim_fgh.project_basis(V=reduced_basis)
-        if self.deim_rhs is not None:
+        if self.deim_rhs:
             self.deim_rhs.project_basis(V=reduced_basis)
 
-        if self.mdeim_Mh is not None:
+        if self.mdeim_Mh:
             self.mdeim_Mh.project_basis(V=reduced_basis)
-        if self.mdeim_Ah is not None:
+        if self.mdeim_Ah:
             self.mdeim_Ah.project_basis(V=reduced_basis)
-        if self.mdeim_Ch is not None:
+        if self.mdeim_Ch:
             self.mdeim_Ch.project_basis(V=reduced_basis)
+        if self.mdeim_Nh:
+            self.mdeim_Nh.project_basis(V=reduced_basis)
+        if self.mdeim_Nh_hat:
+            self.mdeim_Nh_hat.project_basis(V=reduced_basis)
 
     def build_reduced_basis(
         self,
@@ -226,15 +245,21 @@ class RomConstructor(Reductor):
         if fom.is_setup == False:
             fom.setup()
 
-        basis_time = list()
+        # For validation phase
+        fom_solutions = dict()
+        basis_time = []
         for mu in tqdm(space, desc="(ROM) Building reduced basis"):
 
             # Save parameter
             mu_idx, mu = self.add_mu(mu=mu, step=Stage.OFFLINE)
 
             # Solve FOM time-dependent problem
+            fom.setup()
             fom.update_parametrization(mu)
             fom.solve()
+
+            # Store actual solution
+            fom_solutions[mu_idx] = fom._solutions.copy()
 
             # Orthonormalize the time-snapshots
             _basis, sigmas_time, energy_time = orth(
@@ -247,6 +272,10 @@ class RomConstructor(Reductor):
             self.report[Stage.OFFLINE]["energy-time"][mu_idx] = energy_time
             self.report[Stage.OFFLINE]["basis-shape-time"][mu_idx] = _basis.shape[1]
 
+            if fom.RUNTIME_PROCESS:
+                name_probes = f"probes_offline_fom_{mu_idx}"
+                fom.plot_probes(show=False, save=name_probes)
+
         basis = np.hstack(basis_time)
         self.report[Stage.OFFLINE]["basis-shape-after-tree-walk"] = basis.shape[1]
 
@@ -255,21 +284,20 @@ class RomConstructor(Reductor):
             basis,
             num=num_basis,
             tol=tolerances.get(RomParameters.TOL_MU, None),
-            orthogonalize=False,
+            normalize=False,
         )
 
         self.report[Stage.OFFLINE]["spectrum-mu"] = sigmas_mu
         self.report[Stage.OFFLINE]["energy-mu"] = energy_mu
         self.report[Stage.OFFLINE]["basis-shape-final"] = basis.shape[1]
 
-        # Store reduced basis
-        self.N = basis.shape[1]
+        self.basis = basis
 
         assert (
             self.N != 0
         ), f"(ROM) There are no basis vectors. \n See tolerance according to mu-energy: {tolerances[RomParameters.TOL_MU]} < {energy_mu}"
 
-        self.basis = basis
+        return fom_solutions
 
     def create_algebraic_solver(self):
         """Create algebraic solver for reduced problem
@@ -283,6 +311,9 @@ class RomConstructor(Reductor):
         solver = partial(gmres, **self.GMRES_OPTIONS)
 
         return solver
+
+    def runtime_process(self, u=None, mu=None, t=None):
+        pass
 
     def solve(self, mu, step):
         """Solve problem with ROM.
@@ -312,8 +343,20 @@ class RomConstructor(Reductor):
         t = 0.0
         #  TODO : project initial solution
         uN_n = np.zeros(shape=self.N)
+        uh = self.to_fom_vector(uN_n)
+
+        BDF_SCHEME = fom.BDF_SCHEME
+        if BDF_SCHEME == BDF.TWO:
+            uN_n1 = np.zeros_like(uN_n)
+        else:
+            uN_n1 = None
+
         for timestep in tqdm(
-            range(fom.domain["nt"]), desc="(ROM) Solve in time", leave=False
+            range(fom.domain["nt"]),
+            desc="(ROM) Solve in time",
+            leave=False,
+            miniters=100,
+            mininterval=5.0,
         ):
 
             # Update time
@@ -321,11 +364,15 @@ class RomConstructor(Reductor):
 
             timesteps.append(t)
 
+            bdf = 1.0
+            if (BDF_SCHEME == BDF.TWO) & (timestep > 0):
+                bdf = 1.5
+
             ########################
             # Assemble linear system
             ########################
-            MN_mat, KN_mat = self.assemble_system(mu, t)
-            bN_vec = self.assemble_system_rhs(mu, t, uN_n, MN_mat)
+            MN_mat, KN_mat = self.assemble_system(mu, t, uh, bdf)
+            bN_vec = self.assemble_system_rhs(mu, t, MN_mat, uN_n, uN_n1)
 
             ###############
             # Solve problem
@@ -333,6 +380,8 @@ class RomConstructor(Reductor):
             uN, info = self.algebraic_solver(A=KN_mat, b=bN_vec)
 
             # Update solution
+            if BDF_SCHEME == BDF.TWO:
+                uN_n1 = uN_n.copy()
             uN_n = uN.copy()
 
             ##############
@@ -354,6 +403,8 @@ class RomConstructor(Reductor):
             # Collect solutions
             solutions[t] = uc_h.copy()
 
+            # self.runtime_process(u=uc_h, mu=mu, t=t)
+
             # Compute error with exact solution
             if fom.exact_solution is not None:
                 ue = fenics.Expression(fom.exact_solution, degree=1, t=t, **mu)
@@ -366,10 +417,14 @@ class RomConstructor(Reductor):
 
         self.timesteps = timesteps
         self.solutions.update({idx_mu: solutions})
+        _solution = [np.array(uh_n) for uh_n in solutions.values()]
+        self._solution = np.vstack(_solution).T
 
         if ue is not None:
             self.errors.update({idx_mu: np.array(errors)})
             self.exact.update({idx_mu: exact})
+
+        return idx_mu
 
     def assemble_system_rhs(self, mu, t, uN_n, MN_mat):
 
@@ -379,7 +434,7 @@ class RomConstructor(Reductor):
         bN_vec = MN_mat.dot(uN_n) + dt * fN_vec
         return bN_vec
 
-    def assemble_system(self, mu, t):
+    def assemble_system(self, mu, t, uh=None):
 
         MN_mat = self.assemble_mass(mu=mu, t=t)
         AN_mat = self.assemble_stiffness(mu=mu, t=t)
@@ -527,7 +582,7 @@ class RomConstructorMoving(RomConstructor):
 
         return CN
 
-    def assemble_system(self, mu, t):
+    def assemble_system(self, mu, t, uh=None):
         """Assemble algebraic ROM system.
 
         Parameters
@@ -550,3 +605,115 @@ class RomConstructorMoving(RomConstructor):
         KN_mat = MN_mat + dt * (AN_mat + CN_mat)
 
         return MN_mat, KN_mat
+
+
+class RomConstructorNonlinear(RomConstructorMoving):
+    def __init__(self, fom: OneDimensionalBurgers, grid: dict) -> None:
+        super().__init__(fom=fom, grid=grid)
+
+        self.probe_location = fom.probe_location
+        self.probes = None
+
+    def runtime_process(self, u, mu, t):
+
+        fom = self.fom
+
+        # fom.move_mesh(mu=mu, t=t)
+        uh = array_to_function(u, fom.V)
+        # fom.move_mesh(back=True)
+
+        num_probs = len(self.probe_location)
+        for idx in range(num_probs):
+            loc = self.probe_location[idx]
+            self.probes[idx].append(uh(loc))
+
+        # Probe at the piston movement
+        idx_L = idx + 1
+        loc = fom.L - fenics.DOLFIN_EPS
+        self.probes[idx_L].append(uh(loc))
+
+    def assemble_system(self, mu, t, uh, bdf=1.0):
+        """Assemble algebraic ROM system.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+
+        Returns
+        -------
+        MN_mat : np.array
+            Mass matrix.
+        KN_mat : np.array
+        """
+
+        MN_mat = self.assemble_mass(mu=mu, t=t)
+        AN_mat = self.assemble_stiffness(mu=mu, t=t)
+        CN_mat = self.assemble_convection(mu=mu, t=t)
+        NN_mat = self.assemble_nonlinear(mu=mu, t=t, uh=uh)
+        NhatN_mat = self.assemble_nonlinear_lifting(mu=mu, t=t)
+
+        dt = self.fom.dt
+        KN_mat = bdf * MN_mat + dt * (AN_mat + CN_mat + NN_mat + NhatN_mat)
+
+        return MN_mat, KN_mat
+
+    def assemble_system_rhs(self, mu, t, MN_mat, uN_n, uN_n1=None):
+
+        #  No forcing term for Burgers equation ...
+        fgN_vec = self.assemble_lifting(mu=mu, t=t)
+
+        if uN_n1 is None:
+            bdf = MN_mat.dot(uN_n)
+        else:
+            u_sum = 2.0 * uN_n - 0.5 * uN_n1
+            bdf = MN_mat.dot(u_sum)
+
+        dt = self.fom.dt
+        bN_vec = bdf + dt * fgN_vec
+        return bN_vec
+
+    def assemble_nonlinear(self, mu, t, uh):
+        """Assemble nonlinear convection operator.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+        uh : ??
+
+        Returns
+        -------
+        NN : np.array
+        """
+
+        if self.mdeim_Nh:
+            NN = self.mdeim_Nh.interpolate(mu=mu, t=t, u_n=uh, which=self.ROM)
+        else:
+            # Assemble FOM operator
+            Nh = self.fom.assemble_nonlinear(mu=mu, t=t, u_n=uh)
+            NN = self.to_rom(Nh)
+
+        return NN
+
+    def assemble_nonlinear_lifting(self, mu, t):
+        """Assemble linerized convection operator containing lifting terms.
+
+        Parameters
+        ----------
+        mu : dict
+        t : float
+
+        Returns
+        -------
+        NN_hat : np.array
+        """
+
+        if self.mdeim_Nh_hat:
+            NN_hat = self.mdeim_Nh_hat.interpolate(mu=mu, t=t, which=self.ROM)
+        else:
+            # Assemble FOM operator
+            Nh_hat = self.fom.assemble_nonlinear_lifting(mu, t)
+            NN_hat = self.to_rom(Nh_hat)
+
+        return NN_hat

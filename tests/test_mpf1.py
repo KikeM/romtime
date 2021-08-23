@@ -1,5 +1,5 @@
-"""Steady-State Manufactured Problem Implementation.
-[MFP1]
+"""[MFP1]
+Steady-State Manufactured Problem Implementation.
 """
 from functools import partial
 

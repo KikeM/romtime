@@ -1,10 +1,12 @@
 from .base import Reductor
-from .rom import RomConstructor, RomConstructorMoving
 from .pod import orth
+from .rom import RomConstructor, RomConstructorMoving, RomConstructorNonlinear
 
 __all__ = [
     "Reductor",
     "RomConstructor",
     "RomConstructorMoving",
     "orth",
+    "HyperReducedOrderModelFixed",
+    "HyperReducedOrderModelMoving",
 ]

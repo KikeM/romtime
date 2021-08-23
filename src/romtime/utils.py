@@ -20,6 +20,23 @@ def plot(A, x=None, plot_kwargs={}, title=None, show=True):
         plt.show()
 
 
+def array_to_function(array, V):
+    """Array to FE Function.
+
+    Parameters
+    ----------
+    array : np.array
+    V : fenics.FunctionSpace
+
+    Returns
+    -------
+    u_n : fenics.Function
+    """
+    u_n = fenics.Function(V)
+    u_n.vector().set_local(array)
+    return u_n
+
+
 def function_to_array(coef_func):
     """Return array from coefficient function.
 
