@@ -3,7 +3,7 @@ from functools import partial, reduce
 
 import fenics
 import numpy as np
-from numpy.random import standard_t
+from romtime.base import RomSolutionsStorage
 from romtime.fom.nonlinear import OneDimensionalBurgers
 from dolfin.cpp.la import Matrix, Vector
 from romtime.conventions import (
@@ -42,9 +42,7 @@ class RomConstructor(Reductor):
 
         self.basis = None
 
-        self.timesteps = dict()
         self.solutions = dict()
-        self._solution = np.array
 
         self.errors = dict()
         self.exact = dict()
@@ -53,18 +51,17 @@ class RomConstructor(Reductor):
         self.deim_fgh = None
         self.deim_rhs = None
 
-        self.mdeim_Mh = None
-        self.mdeim_Ah = None
-        self.mdeim_Ch = None
-        self.mdeim_Nh = None
-        self.mdeim_Nh_hat = None
+        self.mdeim_Mh = None  #  Mass
+        self.mdeim_Ah = None  #  Stiffness
+        self.mdeim_Ch = None  #  Convection
+        self.mdeim_Nh = None  # Nonlinear
+        self.mdeim_Nh_hat = None  # Lifting with nonlinear
 
     def __del__(self):
 
         del self.fom
         del self.basis
 
-        del self.timesteps
         del self.solutions
 
         del self.errors
@@ -82,11 +79,17 @@ class RomConstructor(Reductor):
 
     @property
     def N(self):
+        """Number of reduced basis elements."""
         return self.basis.shape[1]
 
     @property
     def shape(self):
+        """Reduced basis shape."""
         return self.basis.shape
+
+    @property
+    def timesteps(self):
+        return self.solutions.ts
 
     def to_fom_vector(self, uN):
         """Build FOM vector from ROM basis functions.
@@ -161,6 +164,18 @@ class RomConstructor(Reductor):
         self.mu_space = deepcopy(mu_space)
 
     def truncate(self, n):
+        """Truncate ROM.
+
+        Parameters
+        ----------
+        n : int
+            Number of basis elements to remove.
+
+        Returns
+        -------
+        truncated : ROM
+            Truncated ROM.
+        """
 
         # Create truncated ROM
         truncated = self.__class__(fom=self.fom, grid=self.grid, name=self.name)
@@ -169,6 +184,7 @@ class RomConstructor(Reductor):
         # Remove modes
         N = self.N
         assert n < N, "You want to remove too many modes from S-ROM to create ROM."
+        print(f"Truncating basis ... from {N} to {N-n}.")
         truncated.basis = self.basis[:, : N - n]
 
         # Copy data structures
@@ -305,11 +321,11 @@ class RomConstructor(Reductor):
 
             # -----------------------------------------------------------------
             # Store actual solution
-            fom_solutions[mu_idx] = fom._solutions.copy()
+            fom_solutions[mu_idx] = fom.solutions.fom.copy()
 
             # -----------------------------------------------------------------
             # SVD - Time snapshots
-            _basis, sigmas_time, energy_time = orth(fom._snapshots, tol=tol_t)
+            _basis, sigmas_time, energy_time = orth(fom.solutions.snapshots, tol=tol_t)
             basis_time.append(_basis)
 
             self.report[Stage.OFFLINE][Treewalk.SPECTRUM_TIME][mu_idx] = sigmas_time
@@ -375,20 +391,15 @@ class RomConstructor(Reductor):
 
         fom = self.fom
 
-        # Start iteration
-        solutions = dict()
-
         if fom.exact_solution is not None:
             errors = []
             exact = dict()
         else:
             ue = None
 
-        timesteps = [0.0]
-
         dt = fom.dt
         t = 0.0
-        #  TODO : project initial solution
+        # TODO : project initial solution
         uN_n = np.zeros(shape=self.N)
         uh = self.to_fom_vector(uN_n)
 
@@ -400,7 +411,10 @@ class RomConstructor(Reductor):
 
         # ---------------------------------------------------------------------
         # Solve in time
-        solutions_rom = []
+        timesteps = []
+        fom_coeffs = []
+        rom_coeffs = []
+        domains = []
         for timestep in tqdm(
             range(fom.domain["nt"]),
             desc="(ROM) Solve in time",
@@ -418,46 +432,46 @@ class RomConstructor(Reductor):
             if (BDF_SCHEME == BDF.TWO) & (timestep > 0):
                 bdf = 1.5
 
-            ########################
+            # -----------------------------------------------------------------
             # Assemble linear system
-            ########################
             MN_mat, KN_mat = self.assemble_system(mu, t, uh, bdf)
             bN_vec = self.assemble_system_rhs(mu, t, MN_mat, uN_n, uN_n1)
 
-            ###############
+            # -----------------------------------------------------------------
             # Solve problem
-            ###############
             uN, info = self.algebraic_solver(A=KN_mat, b=bN_vec)
 
-            solutions_rom.append(uN)
+            rom_coeffs.append(uN)
 
             # Update solution
             if BDF_SCHEME == BDF.TWO:
                 uN_n1 = uN_n.copy()
             uN_n = uN.copy()
 
-            ##############
+            # -----------------------------------------------------------------
             # FEM solution
-            ##############
-            if fom.Lt:
-                fom.move_mesh(mu=mu, t=t)
-                g, _, _ = fom.create_lifting_operator(mu=mu, t=t, L=fom.L)
-                fom.move_mesh(back=True)
-            else:
-                g, _, _ = fom.create_lifting_operator(mu=mu, t=t, L=fom.domain[fom.L0])
+            fom.move_mesh(mu=mu, t=t)
+            x = fom.x.copy()
+            domains.append(x)
+            g, _, _ = fom.create_lifting_operator(mu=mu, t=t, L=fom.L)
+            fom.move_mesh(back=True)
 
+            # Lifting
             gh = fom.interpolate_func(g, fom.V, mu, t)
             gh = function_to_array(gh)
 
+            # Project ROM solution in FOM space
             uh = self.to_fom_vector(uN)
             uc_h = uh + gh
 
+            # -----------------------------------------------------------------
             # Collect solutions
-            solutions[t] = uc_h.copy()
+            fom_coeffs.append(uc_h.copy())
 
             # self.runtime_process(u=uc_h, mu=mu, t=t)
 
-            # Compute error with exact solution
+            # -----------------------------------------------------------------
+            # Compute error with exact solution (if available)
             if fom.exact_solution is not None:
                 ue = fenics.Expression(fom.exact_solution, degree=1, t=t, **mu)
                 ue_h = fom.interpolate_func(ue, fom.V, mu, t)
@@ -467,11 +481,19 @@ class RomConstructor(Reductor):
                 error = self._compute_error(u=uc_h, ue=ue_h)
                 errors.append(error)
 
-        self.timesteps = timesteps
-        self.solutions.update({idx_mu: solutions})
-        _solution = [np.array(uh_n) for uh_n in solutions.values()]
-        self._solution = np.vstack(_solution).T
-        self.solutions_rom = np.vstack(solutions_rom).T
+        fom_sols = np.vstack(fom_coeffs).T
+        rom_sols = np.vstack(rom_coeffs).T
+        domains = np.hstack(domains)
+
+        solutions = RomSolutionsStorage(
+            ts=timesteps,
+            mu=mu,
+            domain=domains,
+            fom=fom_sols,
+            rom=rom_sols,
+        )
+
+        self.solutions = solutions
 
         if ue is not None:
             self.errors.update({idx_mu: np.array(errors)})

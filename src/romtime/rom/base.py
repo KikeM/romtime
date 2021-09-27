@@ -33,6 +33,8 @@ class Reductor:
         self.errors_rom = defaultdict(list)
         self.summary_errors = None
 
+        self.mu = None
+
         self.random_state = None
 
     def __del__(self):
@@ -92,6 +94,9 @@ class Reductor:
         self.mu_space[step].append(mu)
 
         idx = self.mu_space[step].index(mu)
+
+        self.mu = mu
+
         return idx, mu
 
     def build_sampling_space(self, num, rnd=None):

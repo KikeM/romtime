@@ -7,6 +7,7 @@ import fenics
 import matplotlib.pyplot as plt
 import numpy as np
 from adjustText import adjust_text
+from romtime.base import SolutionsStorage
 from romtime.conventions import BDF, Domain, FIG_KWARGS
 from romtime.utils import bilinear_to_csr, eliminate_zeros, function_to_array
 from scipy.sparse import find as get_nonzero_entries
@@ -99,7 +100,6 @@ class OneDimensionalSolver(ABC):
         self.exact = None
 
         # FEM structures
-        self.timesteps = None
         self.algebraic_solver = None
 
         # Mappings for local integration
@@ -109,9 +109,7 @@ class OneDimensionalSolver(ABC):
         self.dofs_dirichlet = None
 
         # Snapshots Collection
-        self.solutions = None  # Actual solutions
-        self.snapshots = None  # Homogeneous solutions (for ROM)
-        self.liftings = None
+        self.solutions = None  # SolutionsStorage
 
         self.is_setup = False
 
@@ -134,7 +132,6 @@ class OneDimensionalSolver(ABC):
         del self.exact_solution
         del self.exact
         # FEM structures
-        del self.timesteps
         del self.algebraic_solver
         # Mappings for local integration
         del self.cell_to_dofs
@@ -143,12 +140,10 @@ class OneDimensionalSolver(ABC):
         del self.dofs_dirichlet
         # Snapshots Collection
         del self.solutions
-        del self.snapshots
-        del self.liftings
         del self.is_setup
 
     @property
-    def x(self):
+    def x(self) -> np.array:
         """DOF coordinates distribution.
 
         Returns
@@ -176,6 +171,10 @@ class OneDimensionalSolver(ABC):
         # Time domain step size
         dt = self.domain[self.T] / self.domain[self.NT]
         return dt
+
+    @property
+    def timesteps(self):
+        return self.solutions.ts
 
     @staticmethod
     def dict_to_array(my_dict):
@@ -724,7 +723,7 @@ class OneDimensionalSolver(ABC):
         snapshots = dict()
         solutions = dict()
 
-        timesteps = [0.0]
+        timesteps = []
         domain_x = []
         solver = self.algebraic_solver
 
@@ -808,13 +807,15 @@ class OneDimensionalSolver(ABC):
 
         # ---------------------------------------------------------------------
         # Save results
-        self.timesteps = timesteps
-        self.solutions = solutions.copy()
-        self.snapshots = snapshots
+        solutions = SolutionsStorage(
+            ts=timesteps,
+            mu=mu,
+            domain=np.hstack(domain_x),
+            fom=self.dict_to_array(solutions),
+            snapshots=self.dict_to_array(snapshots),
+        )
 
-        # Collect snapshots as actual arrays
-        self._snapshots = self.dict_to_array(snapshots)
-        self._solutions = self.dict_to_array(solutions)
+        self.solutions = solutions
 
         if self.Lt:
             self.domain_x = np.hstack(domain_x)
@@ -961,7 +962,7 @@ class OneDimensionalSolver(ABC):
         errors = np.array(list(self.errors.values()))
         if log:
             errors = np.log10(errors)
-        plt.plot(self.timesteps[1:], errors, label=label)
+        plt.plot(self.timesteps, errors, label=label)
 
         plt.grid()
         plt.xlabel("$t$")

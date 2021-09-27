@@ -479,27 +479,29 @@ class HyperReducedOrderModelFixed:
                 fom.setup()
                 fom.update_parametrization(mu)
                 fom.solve()
-                uh_fom = fom._solutions
+                uh_fom = fom.solutions.fom
 
+            # -----------------------------------------------------------------
             # Compute errors
-            uh_rom = rom._solution
-            uh_srom = srom._solution
+            uh_rom = rom.solutions.fom
+            uh_srom = srom.solutions.fom
 
             nt = uh_fom.shape[1]
-            errors_rom = [
-                compute_error(uh_fom[:, idx], uh_rom[:, idx]) for idx in range(nt)
+            _compute_error = lambda uh: [
+                compute_error(uh_fom[:, idx], uh[:, idx]) for idx in range(nt)
             ]
-            errors_srom = [
-                compute_error(uh_fom[:, idx], uh_srom[:, idx]) for idx in range(nt)
-            ]
+
+            errors_rom = _compute_error(uh_rom)
+            errors_srom = _compute_error(uh_srom)
+
             # Convert to array format
             errors_rom = np.array(errors_rom)
             errors_srom = np.array(errors_srom)
 
             # -----------------------------------------------------------------
             # Compute error estimator
-            uNs = rom.solutions_rom
-            uNs_srom = srom.solutions_rom
+            uNs = rom.solutions.rom
+            uNs_srom = srom.solutions.rom
 
             V_srom = srom.basis
 
@@ -526,13 +528,13 @@ class HyperReducedOrderModelFixed:
                 name_probes = f"probes_{which}_fom_{idx_mu}.csv"
                 fom.save_probes(name=name_probes)
 
-            # Compute ROM solution
-            # TODO: Pending! I have problems with function evaluations after I
-            # use interpolate.
+            half_fom = fom.solutions.compute_at(x=0.5)
+            half_rom = rom.solutions.compute_at(x=0.5)
+            half_srom = srom.solutions.compute_at(x=0.5)
 
             # -----------------------------------------------------------------
             # Compute mass conservation
-            timesteps = rom.timesteps[1:]
+            timesteps = rom.timesteps
 
             # ROM
             rom_sols = uh_rom.T
