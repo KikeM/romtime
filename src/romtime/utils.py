@@ -1,5 +1,9 @@
+import ujson
+import pickle
+
 import fenics
 import matplotlib.pyplot as plt
+import pandas as pd
 import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse import find as get_nonzero_entries
@@ -162,3 +166,102 @@ def eliminate_zeros(Ah):
     Ah.eliminate_zeros()
 
     return Ah
+
+
+# -----------------------------------------------------------------------------
+# Certification
+def compute_rom_difference(uN, uN_srom, V_srom):
+    """Compute L2 error between ROM and S-ROM.
+
+    Parameters
+    ----------
+    uN : np.array
+        ROM coefficients
+    u_Nhat : np.array
+        S-ROM coefficients
+    basis_hat : np.array
+        S-ROM basis
+
+    Returns
+    -------
+    error : float
+    """
+
+    # -------------------------------------------------------------------------
+    # Add zeroes to smaller ROM
+    num_N = len(uN)
+    num_N_hat = len(uN_srom)
+    extra = num_N_hat - num_N
+
+    _uN = np.append(uN, extra * [0.0])
+
+    # -------------------------------------------------------------------------
+    # Compute ROMs difference norm
+    diff = uN_srom - _uN
+
+    lincomb = diff * V_srom
+    lincomb = np.sum(lincomb, axis=1)
+
+    error = np.linalg.norm(lincomb, ord=2)
+
+    # -------------------------------------------------------------------------
+    # Adjust the norm by the length of the vector to obtain the error
+    N = len(lincomb)
+    error /= np.sqrt(N)
+
+    return error
+
+
+def time_average(ts, func):
+
+    I = np.trapz(y=func, x=ts)
+    T = np.max(ts)
+    I /= T
+
+    return I
+
+
+def singular_to_energy(sigmas):
+
+    # Compute system energy
+    eigenvalues = np.power(sigmas, 2)
+    total = np.sum(eigenvalues)
+    energy = np.cumsum(eigenvalues) / total
+
+    return energy
+
+
+# -----------------------------------------------------------------------------
+# IO
+def read_pickle(path):
+
+    with open(path, mode="rb") as fp:
+        obj = pickle.load(fp)
+
+    return obj
+
+
+def dump_pickle(path, obj):
+
+    with open(path, mode="wb") as fp:
+        pickle.dump(obj, fp)
+
+
+def dump_json(path, obj):
+
+    with open(path, mode="w") as fp:
+        ujson.dump(obj, fp)
+
+
+def read_json(path):
+
+    with open(path, mode="r") as fp:
+        obj = ujson.load(fp)
+
+    return obj
+
+
+def dump_csv(path, obj):
+
+    df = pd.DataFrame(obj)
+    df.to_csv(path)

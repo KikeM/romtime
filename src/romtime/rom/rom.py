@@ -1,10 +1,19 @@
+from copy import deepcopy
 from functools import partial, reduce
 
 import fenics
 import numpy as np
+from numpy.random import standard_t
 from romtime.fom.nonlinear import OneDimensionalBurgers
 from dolfin.cpp.la import Matrix, Vector
-from romtime.conventions import BDF, RomParameters, OperatorType, Stage
+from romtime.conventions import (
+    BDF,
+    PistonParameters,
+    RomParameters,
+    OperatorType,
+    Stage,
+    Treewalk,
+)
 from romtime.fom.base import OneDimensionalSolver
 from romtime.utils import (
     array_to_function,
@@ -22,17 +31,14 @@ from .pod import orth
 
 class RomConstructor(Reductor):
 
-    GMRES_OPTIONS = dict(atol=1e-7, tol=1e-7, maxiter=1000)
+    GMRES_OPTIONS = dict(atol=1e-7, tol=1e-7, maxiter=1e4)
 
-    def __init__(
-        self,
-        fom: OneDimensionalSolver,
-        grid: dict,
-    ) -> None:
+    def __init__(self, fom: OneDimensionalSolver, grid: dict, name=None) -> None:
 
         super().__init__(grid=grid)
 
         self.fom = fom
+        self.name = name
 
         self.basis = None
 
@@ -77,6 +83,10 @@ class RomConstructor(Reductor):
     @property
     def N(self):
         return self.basis.shape[1]
+
+    @property
+    def shape(self):
+        return self.basis.shape
 
     def to_fom_vector(self, uN):
         """Build FOM vector from ROM basis functions.
@@ -141,6 +151,33 @@ class RomConstructor(Reductor):
 
         return opN
 
+    def load_from_basis(self, basis, mu_space):
+
+        self.basis = deepcopy(basis)
+        # ---------------------------------------------------------------------
+        # ROM mu space
+        mu_space[Stage.ONLINE] = []
+        mu_space[Stage.VALIDATION] = []
+        self.mu_space = deepcopy(mu_space)
+
+    def truncate(self, n):
+
+        # Create truncated ROM
+        truncated = self.__class__(fom=self.fom, grid=self.grid, name=self.name)
+        truncated.setup(rnd=self.random_state)
+
+        # Remove modes
+        N = self.N
+        assert n < N, "You want to remove too many modes from S-ROM to create ROM."
+        truncated.basis = self.basis[:, : N - n]
+
+        # Copy data structures
+        truncated.mu_space = deepcopy(self.mu_space)
+        truncated.report = deepcopy(self.report)
+        truncated.report[Stage.OFFLINE][Treewalk.BASIS_FINAL] = truncated.N
+
+        return truncated
+
     def setup(self, rnd):
         """Prepare reduction structures.
 
@@ -170,50 +207,52 @@ class RomConstructor(Reductor):
             If the reductor has not being implemented.
         """
 
+        _reductor = reductor.copy()
+
         # Functionals
         if which == OperatorType.FORCING:
-            self.deim_fh = reductor
+            self.deim_fh = _reductor
         elif which == OperatorType.LIFTING:
-            self.deim_fgh = reductor
+            self.deim_fgh = _reductor
         elif which == OperatorType.RHS:
-            self.deim_rhs = reductor
+            self.deim_rhs = _reductor
 
         #  Matrices
         elif which == OperatorType.MASS:
-            self.mdeim_Mh = reductor
+            self.mdeim_Mh = _reductor
         elif which == OperatorType.STIFFNESS:
-            self.mdeim_Ah = reductor
+            self.mdeim_Ah = _reductor
         elif which == OperatorType.CONVECTION:
-            self.mdeim_Ch = reductor
+            self.mdeim_Ch = _reductor
         elif which == OperatorType.NONLINEAR:
-            self.mdeim_Nh = reductor
+            self.mdeim_Nh = _reductor
         elif which == OperatorType.NONLINEAR_LIFTING:
-            self.mdeim_Nh_hat = reductor
+            self.mdeim_Nh_hat = _reductor
         else:
             raise NotImplementedError(f"Which is this reductor? {which}")
 
     def project_reductors(self):
         """Project collateral basis unto the solution reduced space."""
 
-        reduced_basis = self.basis
+        V = self.basis
 
         if self.deim_fh:
-            self.deim_fh.project_basis(V=reduced_basis)
+            self.deim_fh.project_basis(V=V)
         if self.deim_fgh:
-            self.deim_fgh.project_basis(V=reduced_basis)
+            self.deim_fgh.project_basis(V=V)
         if self.deim_rhs:
-            self.deim_rhs.project_basis(V=reduced_basis)
+            self.deim_rhs.project_basis(V=V)
 
         if self.mdeim_Mh:
-            self.mdeim_Mh.project_basis(V=reduced_basis)
+            self.mdeim_Mh.project_basis(V=V)
         if self.mdeim_Ah:
-            self.mdeim_Ah.project_basis(V=reduced_basis)
+            self.mdeim_Ah.project_basis(V=V)
         if self.mdeim_Ch:
-            self.mdeim_Ch.project_basis(V=reduced_basis)
+            self.mdeim_Ch.project_basis(V=V)
         if self.mdeim_Nh:
-            self.mdeim_Nh.project_basis(V=reduced_basis)
+            self.mdeim_Nh.project_basis(V=V)
         if self.mdeim_Nh_hat:
-            self.mdeim_Nh_hat.project_basis(V=reduced_basis)
+            self.mdeim_Nh_hat.project_basis(V=V)
 
     def build_reduced_basis(
         self,
@@ -240,56 +279,64 @@ class RomConstructor(Reductor):
                 "You need to provide a number of mu-snapshots or a space."
             )
 
+        # ---------------------------------------------------------------------
         # Put up the solver and start loop in parameter space
         fom = self.fom
         if fom.is_setup == False:
             fom.setup()
 
+        # ---------------------------------------------------------------------
+        # Build Reduced Order Basis (V)
         # For validation phase
         fom_solutions = dict()
         basis_time = []
+        tol_t = tolerances.get(RomParameters.TOL_TIME, None)
         for mu in tqdm(space, desc="(ROM) Building reduced basis"):
 
             # Save parameter
             mu_idx, mu = self.add_mu(mu=mu, step=Stage.OFFLINE)
 
+            # -----------------------------------------------------------------
             # Solve FOM time-dependent problem
+            # Is this necessary? Yes, for the probes
             fom.setup()
             fom.update_parametrization(mu)
             fom.solve()
 
+            # -----------------------------------------------------------------
             # Store actual solution
             fom_solutions[mu_idx] = fom._solutions.copy()
 
-            # Orthonormalize the time-snapshots
-            _basis, sigmas_time, energy_time = orth(
-                fom._snapshots,
-                tol=tolerances.get(RomParameters.TOL_TIME, None),
-            )
+            # -----------------------------------------------------------------
+            # SVD - Time snapshots
+            _basis, sigmas_time, energy_time = orth(fom._snapshots, tol=tol_t)
             basis_time.append(_basis)
 
-            self.report[Stage.OFFLINE]["spectrum-time"][mu_idx] = sigmas_time
-            self.report[Stage.OFFLINE]["energy-time"][mu_idx] = energy_time
-            self.report[Stage.OFFLINE]["basis-shape-time"][mu_idx] = _basis.shape[1]
+            self.report[Stage.OFFLINE][Treewalk.SPECTRUM_TIME][mu_idx] = sigmas_time
+            self.report[Stage.OFFLINE][Treewalk.ENERGY_TIME][mu_idx] = energy_time
+            self.report[Stage.OFFLINE][Treewalk.BASIS_TIME][mu_idx] = _basis.shape[1]
 
             if fom.RUNTIME_PROCESS:
-                name_probes = f"probes_offline_fom_{mu_idx}"
-                fom.plot_probes(show=False, save=name_probes)
+                name_probes = f"probes_offline_fom_{mu_idx}.csv"
+                fom.save_probes(name=name_probes)
 
         basis = np.hstack(basis_time)
-        self.report[Stage.OFFLINE]["basis-shape-after-tree-walk"] = basis.shape[1]
 
-        # Compress again all the basis
+        self.report[Stage.OFFLINE][Treewalk.BASIS_AFTER_WALK] = basis.shape[1]
+
+        # ---------------------------------------------------------------------
+        # Compress all the parameter basis
+        tol_mu = tolerances.get(RomParameters.TOL_MU, None)
         basis, sigmas_mu, energy_mu = orth(
             basis,
             num=num_basis,
-            tol=tolerances.get(RomParameters.TOL_MU, None),
+            tol=tol_mu,
             normalize=False,
         )
 
-        self.report[Stage.OFFLINE]["spectrum-mu"] = sigmas_mu
-        self.report[Stage.OFFLINE]["energy-mu"] = energy_mu
-        self.report[Stage.OFFLINE]["basis-shape-final"] = basis.shape[1]
+        self.report[Stage.OFFLINE][Treewalk.SPECTRUM_MU] = sigmas_mu
+        self.report[Stage.OFFLINE][Treewalk.ENERGY_MU] = energy_mu
+        self.report[Stage.OFFLINE][Treewalk.BASIS_FINAL] = basis.shape[1]
 
         self.basis = basis
 
@@ -351,6 +398,9 @@ class RomConstructor(Reductor):
         else:
             uN_n1 = None
 
+        # ---------------------------------------------------------------------
+        # Solve in time
+        solutions_rom = []
         for timestep in tqdm(
             range(fom.domain["nt"]),
             desc="(ROM) Solve in time",
@@ -378,6 +428,8 @@ class RomConstructor(Reductor):
             # Solve problem
             ###############
             uN, info = self.algebraic_solver(A=KN_mat, b=bN_vec)
+
+            solutions_rom.append(uN)
 
             # Update solution
             if BDF_SCHEME == BDF.TWO:
@@ -419,6 +471,7 @@ class RomConstructor(Reductor):
         self.solutions.update({idx_mu: solutions})
         _solution = [np.array(uh_n) for uh_n in solutions.values()]
         self._solution = np.vstack(_solution).T
+        self.solutions_rom = np.vstack(solutions_rom).T
 
         if ue is not None:
             self.errors.update({idx_mu: np.array(errors)})
@@ -557,8 +610,8 @@ class RomConstructor(Reductor):
 
 
 class RomConstructorMoving(RomConstructor):
-    def __init__(self, fom: OneDimensionalSolver, grid: dict) -> None:
-        super().__init__(fom=fom, grid=grid)
+    def __init__(self, fom: OneDimensionalSolver, grid: dict, name=None) -> None:
+        super().__init__(fom=fom, grid=grid, name=name)
 
     def assemble_convection(self, mu, t):
         """Assemble stiffness operator.
@@ -608,11 +661,109 @@ class RomConstructorMoving(RomConstructor):
 
 
 class RomConstructorNonlinear(RomConstructorMoving):
-    def __init__(self, fom: OneDimensionalBurgers, grid: dict) -> None:
-        super().__init__(fom=fom, grid=grid)
+    def __init__(self, fom: OneDimensionalBurgers, grid: dict, name=None) -> None:
+        super().__init__(fom=fom, grid=grid, name=name)
 
         self.probe_location = fom.probe_location
         self.probes = None
+
+    def build_sampling_space(self, num, rnd=None):
+        """Build sampling space according to filling linearity slope.
+
+        Parameters
+        ----------
+        num : int
+        rnd : [type], optional
+            [description], by default None
+
+        Returns
+        -------
+        [type]
+            [description]
+        """
+
+        print("Building linearity sampling space ...")
+
+        grid = self.grid
+
+        linearity_space = self.compute_linearity_space(grid=grid, num=num)
+
+        sampler = super().build_sampling_space(rnd=rnd, num=1000)
+
+        samples = []
+        domains = [
+            (start, end) for start, end in zip(linearity_space, linearity_space[1:])
+        ]
+        for sample in sampler:
+
+            forcing = self.compute_forcing_magnitude(sample)
+
+            remove = None
+            for domain in domains:
+                start, end = domain
+
+                is_ge = forcing >= start
+                is_le = forcing <= end
+                inside = is_ge & is_le
+
+                if inside:
+
+                    sample[PistonParameters.FORCING] = forcing
+                    samples.append(sample)
+
+                    remove = domain
+                    break
+
+            if remove is not None:
+                domains.remove(remove)
+
+            if len(domains) == 0:
+                break
+
+        # Add sorting so the idx makes sense
+        samples = sorted(samples, key=lambda x: x[PistonParameters.FORCING])
+
+        return samples
+
+    @staticmethod
+    def compute_forcing_magnitude(sample):
+
+        A0 = PistonParameters.A0
+        OMEGA = PistonParameters.OMEGA
+        DELTA = PistonParameters.DELTA
+
+        forcing = sample[DELTA] * sample[OMEGA] / sample[A0]
+
+        return forcing
+
+    @staticmethod
+    def compute_linearity_space(grid, num):
+
+        A0 = PistonParameters.A0
+        OMEGA = PistonParameters.OMEGA
+        DELTA = PistonParameters.DELTA
+
+        params = [A0, OMEGA, DELTA]
+        support = {}
+        for var in params:
+            _support = grid[var].support()
+            support[var] = {"min": min(_support), "max": max(_support)}
+
+        # Less input into the system, maximum linearity
+        linearity_max = (
+            support[DELTA]["min"] * support[OMEGA]["min"] / support[A0]["max"]
+        )
+        # Maximum input into the system, maximum linearity
+        linearity_min = (
+            support[DELTA]["max"] * support[OMEGA]["max"] / support[A0]["min"]
+        )
+
+        # Add some constraints to maximum nonlinearity
+        linearity_min *= 0.70
+
+        space = np.linspace(start=linearity_max, stop=linearity_min, num=num + 1)
+
+        return space
 
     def runtime_process(self, u, mu, t):
 
@@ -629,7 +780,7 @@ class RomConstructorNonlinear(RomConstructorMoving):
 
         # Probe at the piston movement
         idx_L = idx + 1
-        loc = fom.L - fenics.DOLFIN_EPS
+        loc = fom.L - 10.0 * fenics.DOLFIN_EPS
         self.probes[idx_L].append(uh(loc))
 
     def assemble_system(self, mu, t, uh, bdf=1.0):
@@ -660,11 +811,16 @@ class RomConstructorNonlinear(RomConstructorMoving):
 
     def assemble_system_rhs(self, mu, t, MN_mat, uN_n, uN_n1=None):
 
-        #  No forcing term for Burgers equation ...
+        # ---------------------------------------------------------------------
+        # No forcing term for Burgers equation ...
         fgN_vec = self.assemble_lifting(mu=mu, t=t)
 
+        # ---------------------------------------------------------------------
+        # BDF 1
         if uN_n1 is None:
             bdf = MN_mat.dot(uN_n)
+        # ---------------------------------------------------------------------
+        # BDF 2
         else:
             u_sum = 2.0 * uN_n - 0.5 * uN_n1
             bdf = MN_mat.dot(u_sum)
@@ -697,7 +853,7 @@ class RomConstructorNonlinear(RomConstructorMoving):
         return NN
 
     def assemble_nonlinear_lifting(self, mu, t):
-        """Assemble linerized convection operator containing lifting terms.
+        """Assemble linearized convection operator containing lifting terms.
 
         Parameters
         ----------

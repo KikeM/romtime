@@ -131,18 +131,15 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
         )
 
         # Store basis and spectrum
-        self.Vfh = Vfh
+        self.basis_fom = Vfh
         self.sigmas = sigmas
-
-        self.Nh = self.Vfh.shape[0]
-        self.N = self.Vfh.shape[1]
 
         dofs, P = self.build_interpolation_mesh()
 
         self.store_dofs(dofs)
 
         # Store interpolation matrix
-        self.PT_U = np.matmul(P.T, self.Vfh)
+        self.PT_U = np.matmul(P.T, self.basis_fom)
 
         # Clean-up
         del P
@@ -196,9 +193,9 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
         """
         # Choose basis
         if (which is None) or (which == self.FOM):
-            Vf = self.Vfh
+            Vf = self.basis_fom
         elif which == self.ROM:
-            Vf = self.VfN
+            Vf = self.basis_rom
 
         # Local assembly on interpolation mesh
         dofs = self.dofs

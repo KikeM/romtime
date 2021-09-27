@@ -1,3 +1,4 @@
+from copy import deepcopy
 import fenics
 import numpy as np
 from romtime.conventions import EmpiricalInterpolation, RomParameters, Stage
@@ -63,6 +64,17 @@ class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
         # Matrix topology
         self.rows = None
         self.cols = None
+
+    def copy(self):
+
+        new = super().copy()
+
+        if self.rows is not None:
+            new.rows = deepcopy(self.rows)
+        if self.cols is not None:
+            new.cols = deepcopy(self.cols)
+
+        return new
 
     def setup(self, rnd):
         """Set up reductor and create matrix topology.
@@ -151,7 +163,7 @@ class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
         self.VfN
         """
 
-        Vfh = self.Vfh
+        Vfh = self.basis_fom
         N = self.N
         self.N_V = V.shape[1]
 
@@ -172,7 +184,12 @@ class MatrixDiscreteEmpiricalInterpolation(DiscreteEmpiricalInterpolation):
             VfN.append(AN)
 
         VfN = np.array(VfN).T
-        self.VfN = VfN
+
+        # Previous clean-up to make sure no memory problems arise
+        if self.basis_rom is not None:
+            del self.basis_rom
+
+        self.basis_rom = VfN
 
     def assemble_snapshot(self, mu, t):
         """Assemble matrix in CSR format.

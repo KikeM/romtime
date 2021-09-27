@@ -2,8 +2,9 @@ from functools import partial
 
 import fenics
 import numpy as np
-from romtime.conventions import FIG_KWARGS
-from romtime.utils import array_to_function, function_to_array, plot, plt
+import pandas as pd
+from romtime.conventions import MassConservation, ProblemType
+from romtime.utils import array_to_function, dump_csv
 
 from .base import OneDimensionalSolver, move_mesh
 
@@ -25,7 +26,6 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         forcing_term,
         u0,
         filename="output.pvd",
-        poly_type="P",
         degrees=1,
         project_u0=False,
         exact_solution=None,
@@ -33,6 +33,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         dLt_dt=None,
         probe_locations=[0.0, 0.5],
     ) -> None:
+        """One-Dimensional Isentropic Gas Dynamics Model."""
 
         super().__init__(
             domain=domain,
@@ -41,7 +42,6 @@ class OneDimensionalBurgers(OneDimensionalSolver):
             forcing_term=forcing_term,
             u0=u0,
             filename=filename,
-            poly_type=poly_type,
             degrees=degrees,
             project_u0=project_u0,
             exact_solution=exact_solution,
@@ -74,7 +74,8 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
     @staticmethod
     def _compute_linear_interpolation(right, mu, t, L, dLt_dt=0.0):
-        """Compute linear interpolation for a one-dimensional mesh.
+        """Compute linear interpolation for a one-dimensional mesh
+        with only one Dirichlet boundary condition.
 
         Parameters
         ----------
@@ -85,7 +86,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         Returns
         -------
         f : fenics.Expression
-            Linear interpolation of boundary values (left/right).
+            Linear interpolation of boundary values (right).
         """
 
         f = fenics.Expression(
@@ -111,19 +112,26 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
         self.probe_location = [0.0, 0.5]
 
+        # Add an extra probe location for piston motion
         num_probs = len(self.probe_location) + 1
         self.probes = dict()
         for idx in range(num_probs):
             self.probes[idx] = list()
 
     def runtime_process(self, u):
+        """Execute postprocessing for each solver step.
 
+        Parameters
+        ----------
+        u : fenics.Coefficient
+            Solution at n-th timestep
+        """
         num_probs = len(self.probe_location)
         for idx in range(num_probs):
             loc = self.probe_location[idx]
             self.probes[idx].append(u(loc))
 
-        # Probe at the piston movement
+        # Probe at piston location
         idx_L = idx + 1
         loc = self.L - 10.0 * fenics.DOLFIN_EPS
         self.probes[idx_L].append(u(loc))
@@ -374,12 +382,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         mu : dict
         t : float
         entries : list, optional
-            [description], by default None
-
-        Returns
-        -------
-        [type]
-            [description]
+            Reduced mesh, by default None
         """
 
         # ---------------------------------------------------------------------
@@ -409,9 +412,6 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         t : float
         entries : list of tuples, optional
             Local entries to assemble when using DEIM techniques, by default None
-
-        Returns
-        -------
         """
 
         # ---------------------------------------------------------------------
@@ -535,9 +535,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
         return pressure
 
-    def compute_mass_conservation(
-        self, mu, ts, solutions, figure=False, save=None, show=True, title=None
-    ):
+    def compute_mass_conservation(self, mu, ts, solutions, which):
 
         gamma = mu[OneDimensionalBurgersConventions.GAMMA]
 
@@ -547,13 +545,15 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         else:
             to_coeff = lambda x: x
 
+        # ---------------------------------------------------------------------
+        # Compute mass conservation terms for each timestep
         mass = []
         outflow = []
         dx = fenics.dx
         for t, u in zip(ts, solutions):
 
             # -----------------------------------------------------------------
-            # Integral computation
+            # Density volume integral
             self.move_mesh(mu=mu, t=t)
             u = to_coeff(u)
             rho = self.compute_rho(u, gamma)
@@ -583,53 +583,17 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         a0 = mu[OneDimensionalBurgersConventions.A0]
         outflow *= a0
 
-        # ---------------------------------------------------------------------
-        # Compute mass conservation equation
-        mc = mass_change - outflow
+        output = {
+            MassConservation.WHICH: which,
+            MassConservation.TIMESTEPS: ts,
+            MassConservation.MASS: mass,
+            MassConservation.MASS_CHANGE: mass_change,
+            MassConservation.OUTFLOW: outflow,
+        }
 
-        self.mc = mc
-        self.outflow = outflow
+        return output
 
-        if figure:
-
-            plt.figure()
-
-            plot(
-                x=ts,
-                A=mass_change,
-                show=False,
-                plot_kwargs=dict(label="$\\frac{d}{dt} \\int \\rho dx$"),
-            )
-            plot(
-                x=ts,
-                A=outflow,
-                show=False,
-                plot_kwargs=dict(label="Outflow $(\\rho(0,t)u(0,t))$"),
-            )
-            plot(
-                x=ts,
-                A=mc,
-                show=False,
-                plot_kwargs=dict(
-                    linestyle="--",
-                    label="Mass Conservation",
-                ),
-            )
-            plt.legend()
-            plt.xlabel("t (s)")
-            if title is None:
-                title = f"dt = {dt}, nx = {self.domain[self.NX]}"
-            plt.title(title)
-
-            if show:
-                plt.show()
-            if save:
-                plt.savefig(save + ".png", **FIG_KWARGS)
-                plt.close()
-
-        return mc, outflow, mass, mass_change
-
-    def plot_probes(self, show=True, save=None):
+    def save_probes(self, name=None):
 
         ts = self.timesteps[1:]
 
@@ -637,32 +601,28 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         locations = self.probe_location
         locations.append("L")
 
-        fig, axes = plt.subplots(
-            nrows=len(locations),
-            ncols=1,
-            sharex=True,
-            sharey=True,
-            gridspec_kw={"hspace": 0.20},
+        df = pd.DataFrame(probes, index=ts)
+        df.index.name = MassConservation.TIMESTEPS
+
+        _map = zip(range(len(locations)), locations)
+        df = df.mul(self.scale_solutions)
+        df = df.rename(columns={idx: name for idx, name in _map})
+
+        df.to_csv(name)
+
+        return df
+
+    def save_mass_conservation(self, name):
+        # Compute mass conservation
+        timesteps = self.timesteps[1:]
+
+        mu = self.mu
+
+        # ROM
+        sols = self._solutions.T
+        output = self.compute_mass_conservation(
+            mu=mu, ts=timesteps, solutions=sols, which=ProblemType.FOM
         )
+        dump_csv(name, obj=output)
 
-        axes = axes.flatten()
-
-        for idx_probe in probes.keys():
-            values = np.array(probes[idx_probe])
-            values *= self.scale_solutions
-            loc = locations[idx_probe]
-            label = f"x={loc}"
-
-            ax = axes[idx_probe]
-            ax.plot(ts, values)
-            ax.grid(True)
-            # ax.set_title(label)
-            ax.set_ylabel(f"$u({loc}, t)$")
-
-        plt.xlabel("t (s)")
-
-        if show:
-            plt.show()
-        if save:
-            plt.savefig(save + ".png", **FIG_KWARGS)
-            plt.close()
+        return output
