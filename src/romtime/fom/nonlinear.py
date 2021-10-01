@@ -595,7 +595,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
     def save_probes(self, name=None):
 
-        ts = self.timesteps[1:]
+        ts = self.timesteps
 
         probes = self.probes
         locations = self.probe_location
@@ -614,7 +614,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
     def save_mass_conservation(self, name):
         # Compute mass conservation
-        timesteps = self.timesteps[1:]
+        timesteps = self.timesteps
 
         mu = self.mu
 
