@@ -128,4 +128,5 @@ class PistonParameters:
     OMEGA = "omega"
     A0 = "a0"
 
-    FORCING = "forcing"
+    MACH_PISTON = "piston_mach"
+    NONLINEARITY = "eta"

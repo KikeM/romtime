@@ -3,7 +3,7 @@ import numpy as np
 from romtime.fom.nonlinear import OneDimensionalBurgers
 
 
-def define_piston_problem(L=None, nx=None, tf=None, nt=None, which="sudden"):
+def define_piston_problem(L=None, nx=None, tf=None, nt=None, which="rest"):
 
     domain = {
         OneDimensionalBurgers.L0: L,
