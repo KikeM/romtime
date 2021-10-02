@@ -3,6 +3,8 @@ from copy import deepcopy
 import numpy as np
 from numpy import interp
 
+from romtime.conventions import PistonParameters
+
 
 class SolutionsStorage:
     def __init__(self, ts, mu, domain, fom, snapshots=None) -> None:
@@ -34,10 +36,18 @@ class SolutionsStorage:
         _range = range(len(self.ts))
         domain = self.domain
         func = self.fom
+
+        # We flip because the domain goes from 1.0 to 0.0
         points = [
             _interp(np.flip(domain[:, idx]), np.flip(func[:, idx])) for idx in _range
         ]
         points = np.array(points)
+
+        # ---------------------------------------------------------------------
+        # Scale to physical units
+        mu = self.mu
+        a0 = mu[PistonParameters.A0]
+        points *= a0
 
         return points
 
@@ -49,8 +59,6 @@ class RomSolutionsStorage(SolutionsStorage):
         self.rom = deepcopy(rom)
 
     def __del__(self):
-        return super().__del__()
+        super().__del__()
 
         del self.rom
-
-    pass

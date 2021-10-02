@@ -20,6 +20,14 @@ class OneDimensionalBurgersConventions:
 
 
 class OneDimensionalBurgers(OneDimensionalSolver):
+
+    # Artificial viscosity
+    ALPHA = 1e-10
+
+    # Heat capacity ratio
+    # gamma = cp/cv
+    GAMMA = 1.4
+
     def __init__(
         self,
         domain: dict,
@@ -64,15 +72,6 @@ class OneDimensionalBurgers(OneDimensionalSolver):
     @property
     def scale_solutions(self):
         return self.mu[OneDimensionalBurgersConventions.A0]
-
-    @staticmethod
-    def nonlinear_coefficient(mu):
-        a0 = mu[OneDimensionalBurgersConventions.A0]
-        gamma = mu[OneDimensionalBurgersConventions.GAMMA]
-        A = (gamma + 1.0) / 2.0
-
-        coeff = A * a0
-        return coeff
 
     @property
     def system_forcing(self):
@@ -160,6 +159,15 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         f = fenics.Expression(f"({right}) / L", degree=2, t=t, L=L, **mu)
 
         return f
+
+    def nonlinear_coefficient(self, mu):
+        """Nonlinear conveciton constant coefficient."""
+        a0 = mu[OneDimensionalBurgersConventions.A0]
+        gamma = self.GAMMA
+        A = (gamma + 1.0) / 2.0
+
+        coeff = A * a0
+        return coeff
 
     def setup(self):
         super().setup()
@@ -250,16 +258,14 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         return bc
 
     def create_diffusion_coefficient(self, mu=None):
-        """Create non-linear diffusion term.
-
-        \\alpha(x) = \\alpha_0 (1 + \\varepsilon x^2)
+        """Create diffusion term to model artificial viscosity.
 
         Returns
         -------
         alpha : fenics.Expression
         """
 
-        alpha = mu["alpha"]
+        alpha = self.ALPHA
         alpha = fenics.Expression("alpha", degree=1, alpha=alpha)
 
         return alpha
@@ -551,11 +557,10 @@ class OneDimensionalBurgers(OneDimensionalSolver):
     def compute_rho(u, gamma):
 
         # Velocity scaling
-        A = gamma - 1.0
-        A /= 2.0
+        A = (gamma - 1.0) / 2.0
 
         # Exponent
-        exp = 2.0 / (gamma - 1)
+        exp = 2.0 / (gamma - 1.0)
 
         rho = (1.0 - A * u) ** (exp)
 
@@ -565,11 +570,10 @@ class OneDimensionalBurgers(OneDimensionalSolver):
     def compute_p(u, gamma):
 
         # Velocity scaling
-        A = gamma - 1.0
-        A /= 2.0
+        A = (gamma - 1.0) / 2.0
 
         # Exponent
-        exp = 2.0 * gamma / (gamma - 1)
+        exp = 2.0 * (gamma / (gamma - 1.0))
 
         pressure = (1.0 - A * u) ** (exp)
 
@@ -577,7 +581,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
     def compute_mass_conservation(self, mu, ts, solutions, which):
 
-        gamma = mu[OneDimensionalBurgersConventions.GAMMA]
+        gamma = self.GAMMA
 
         # This is to prevent many ifs during time loop
         if isinstance(solutions[0], np.ndarray):
@@ -663,9 +667,9 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         mu = self.mu
 
         # ROM
-        sols = self._solutions.T
+        uh_fom = self.solutions.fom.T
         output = self.compute_mass_conservation(
-            mu=mu, ts=timesteps, solutions=sols, which=ProblemType.FOM
+            mu=mu, ts=timesteps, solutions=uh_fom, which=ProblemType.FOM
         )
         dump_csv(name, obj=output)
 
