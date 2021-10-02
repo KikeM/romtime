@@ -3,10 +3,12 @@ from functools import partial
 import fenics
 import numpy as np
 import pandas as pd
-from romtime.conventions import MassConservation, ProblemType
+from romtime.conventions import MassConservation, PistonParameters, ProblemType
 from romtime.utils import array_to_function, dump_csv
+from scipy.signal import find_peaks
 
 from .base import OneDimensionalSolver, move_mesh
+from .utils import compute_time_between_peaks, find_first_positive_peak
 
 
 class OneDimensionalBurgersConventions:
@@ -72,8 +74,61 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         coeff = A * a0
         return coeff
 
+    @property
+    def system_forcing(self):
+        """System forcing magnitude.
+        (Dirichlet boundary condition)
+        """
+
+        mu = self.mu
+
+        delta = mu[PistonParameters.DELTA]
+        omega = mu[PistonParameters.OMEGA]
+        a0 = mu[PistonParameters.A0]
+
+        forcing = delta * omega / a0
+
+        return forcing
+
+    @property
+    def nonlinearity(self):
+        """Measure nonlinear response magnitude.
+
+        Returns
+        -------
+        u_p : float
+            System forcing via piston velocity.
+        eta : float
+            Variable designed to measure the linearity of the system response.
+            If it is close to 1.0, the response is linear.
+            If it is close to 0.0, the response is nonlinear.
+            eta = 0.0 means the sharpest shock wave has been attained.
+        """
+
+        probes = self.probes
+        probe_L = np.array(probes[0])
+        probe_piston = np.array(probes[2])
+
+        peaks_L = find_peaks(np.abs(probe_L))[0]
+        peaks_piston = find_peaks(np.abs(probe_piston))[0]
+
+        indices_L = find_first_positive_peak(probe_L, peaks_L)
+        indices_piston = find_first_positive_peak(probe_piston, peaks_piston)
+
+        # Compute time between peaks
+        ts = self.timesteps
+        T0 = compute_time_between_peaks(ts, indices_piston)
+        T = compute_time_between_peaks(ts, indices_L)
+
+        eta = T / T0
+
+        # System input
+        u_p = self.system_forcing
+
+        return u_p, eta
+
     @staticmethod
-    def _compute_linear_interpolation(right, mu, t, L, dLt_dt=0.0):
+    def _compute_linear_interpolation(right, mu, t, L):
         """Compute linear interpolation for a one-dimensional mesh
         with only one Dirichlet boundary condition.
 
@@ -93,7 +148,6 @@ class OneDimensionalBurgers(OneDimensionalSolver):
             f"({right}) * (x[0] / L)",
             degree=2,
             L=L,
-            dLt_dt=dLt_dt,
             t=t,
             **mu,
         )
@@ -161,21 +215,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         if only_g:
             return g
 
-        # Compute moving boundary effect
-        if self.dLt_dt:
-
-            L0 = self.domain[self.L0]
-
-            dLt_dt = self.dLt_dt(t=t, **mu)
-            dLt_dt *= L0
-            dg_dt = self._compute_linear_interpolation(
-                right=dbL_dt, mu=mu, t=t, L=L, dLt_dt=dLt_dt
-            )
-
-        else:
-            dg_dt = self._compute_linear_interpolation(
-                right=dbL_dt, mu=mu, t=t, L=L, dLt_dt=0.0
-            )
+        dg_dt = self._compute_linear_interpolation(right=dbL_dt, mu=mu, t=t, L=L)
 
         grad_g = self._create_lifting_gradient_expression(
             right=bL,
@@ -604,10 +644,14 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         df = pd.DataFrame(probes, index=ts)
         df.index.name = MassConservation.TIMESTEPS
 
-        _map = zip(range(len(locations)), locations)
+        # Scale solutions to get physical variables
         df = df.mul(self.scale_solutions)
+
+        # Rename columns
+        _map = zip(range(len(locations)), locations)
         df = df.rename(columns={idx: name for idx, name in _map})
 
+        # Output to csv
         df.to_csv(name)
 
         return df

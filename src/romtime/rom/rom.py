@@ -683,6 +683,10 @@ class RomConstructorMoving(RomConstructor):
 
 
 class RomConstructorNonlinear(RomConstructorMoving):
+
+    # This sets an upper limit for the amount of forcing in the system
+    PISTON_MACH_MAX = 0.4
+
     def __init__(self, fom: OneDimensionalBurgers, grid: dict, name=None) -> None:
         super().__init__(fom=fom, grid=grid, name=name)
 
@@ -704,33 +708,38 @@ class RomConstructorNonlinear(RomConstructorMoving):
             [description]
         """
 
-        print("Building linearity sampling space ...")
+        print("Building ad-hoc sampling space ...")
 
         grid = self.grid
 
-        linearity_space = self.compute_linearity_space(grid=grid, num=num)
+        piston_mach_space = self.compute_piston_mach_number_space(
+            grid=grid, num=num, mach_max=self.PISTON_MACH_MAX
+        )
 
-        sampler = super().build_sampling_space(rnd=rnd, num=1000)
+        # This needs to be a high number because we need to sample
+        # many times until we find a parametrization that fits
+        _num = int(2e4)
+        sampler = super().build_sampling_space(rnd=rnd, num=_num)
 
         samples = []
         domains = [
-            (start, end) for start, end in zip(linearity_space, linearity_space[1:])
+            (start, end) for start, end in zip(piston_mach_space, piston_mach_space[1:])
         ]
         for sample in sampler:
 
-            forcing = self.compute_forcing_magnitude(sample)
+            piston_mach = self.compute_piston_mach_number(sample)
 
             remove = None
             for domain in domains:
                 start, end = domain
 
-                is_ge = forcing >= start
-                is_le = forcing <= end
+                is_ge = piston_mach >= start
+                is_le = piston_mach <= end
                 inside = is_ge & is_le
 
                 if inside:
 
-                    sample[PistonParameters.FORCING] = forcing
+                    sample[PistonParameters.MACH_PISTON] = piston_mach
                     samples.append(sample)
 
                     remove = domain
@@ -743,23 +752,23 @@ class RomConstructorNonlinear(RomConstructorMoving):
                 break
 
         # Add sorting so the idx makes sense
-        samples = sorted(samples, key=lambda x: x[PistonParameters.FORCING])
+        samples = sorted(samples, key=lambda x: x[PistonParameters.MACH_PISTON])
 
         return samples
 
     @staticmethod
-    def compute_forcing_magnitude(sample):
+    def compute_piston_mach_number(sample):
 
         A0 = PistonParameters.A0
         OMEGA = PistonParameters.OMEGA
         DELTA = PistonParameters.DELTA
 
-        forcing = sample[DELTA] * sample[OMEGA] / sample[A0]
+        mach = sample[DELTA] * sample[OMEGA] / sample[A0]
 
-        return forcing
+        return mach
 
     @staticmethod
-    def compute_linearity_space(grid, num):
+    def compute_piston_mach_number_space(grid, num, mach_max=None):
 
         A0 = PistonParameters.A0
         OMEGA = PistonParameters.OMEGA
@@ -772,18 +781,17 @@ class RomConstructorNonlinear(RomConstructorMoving):
             support[var] = {"min": min(_support), "max": max(_support)}
 
         # Less input into the system, maximum linearity
-        linearity_max = (
-            support[DELTA]["min"] * support[OMEGA]["min"] / support[A0]["max"]
-        )
+        mach_min = support[DELTA]["min"] * support[OMEGA]["min"] / support[A0]["max"]
+
         # Maximum input into the system, maximum linearity
-        linearity_min = (
-            support[DELTA]["max"] * support[OMEGA]["max"] / support[A0]["min"]
-        )
+        if mach_max is None:
+            mach_max = (
+                support[DELTA]["max"] * support[OMEGA]["max"] / support[A0]["min"]
+            )
 
-        # Add some constraints to maximum nonlinearity
-        linearity_min *= 0.70
+        print(f"piston mach number : (min, max) = {mach_min}, {mach_max}")
 
-        space = np.linspace(start=linearity_max, stop=linearity_min, num=num + 1)
+        space = np.linspace(start=mach_min, stop=mach_max, num=num + 1)
 
         return space
 
