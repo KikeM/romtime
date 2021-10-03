@@ -1,19 +1,21 @@
-from functools import partial
 from collections import defaultdict
-from pprint import pprint
+from functools import partial
 from pathlib import Path
+from pprint import pprint
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import ujson
 from romtime.conventions import (
     FIG_KWARGS,
-    ProblemType,
-    StorageNames,
     Errors,
     OperatorType,
+    ProblemType,
     RomParameters,
     Stage,
+    StorageNames,
     Treewalk,
 )
 from romtime.deim import (
@@ -34,6 +36,8 @@ from romtime.utils import (
     read_pickle,
 )
 from tqdm import tqdm
+
+sns.set_theme(context="paper", palette="viridis")
 
 
 class HyperReducedOrderModelFixed:
@@ -523,14 +527,44 @@ class HyperReducedOrderModelFixed:
             rom_fom_errors.update({idx_mu: payload_errors})
 
             # -----------------------------------------------------------------
-            # Compute FOM solution
+            # Compute FOM and ROM solution
             if fom.RUNTIME_PROCESS & (which == Stage.ONLINE):
                 name_probes = f"probes_{which}_fom_{idx_mu}.csv"
-                fom.save_probes(name=name_probes)
+                probes = fom.save_probes(name=name_probes)
 
-            half_fom = fom.solutions.compute_at(x=0.5)
-            half_rom = rom.solutions.compute_at(x=0.5)
-            half_srom = srom.solutions.compute_at(x=0.5)
+            # piston = probes["L"].squeeze()
+            # piston.name = "piston"
+
+            # half_fom = fom.solutions.compute_at(x=0.5)
+            # half_rom = rom.solutions.compute_at(x=0.5)
+            # half_srom = srom.solutions.compute_at(x=0.5)
+
+            # outflow_fom = fom.solutions.compute_at(x=0.0)
+            # outflow_rom = rom.solutions.compute_at(x=0.0)
+            # outflow_srom = srom.solutions.compute_at(x=0.0)
+
+            # fig, (top, bottom) = plt.subplots(nrows=2)
+
+            # ts = fom.timesteps
+
+            # top.plot(ts, half_fom, label="FOM", linestyle="--")
+            # top.plot(ts, half_rom, label="ROM")
+            # top.plot(ts, half_srom, label="SROM", alpha=0.5)
+
+            # bottom.plot(ts, piston.values, label="piston", linestyle="-.", alpha=0.5)
+            # bottom.plot(ts, outflow_fom, label="FOM", linestyle="--")
+            # bottom.plot(ts, outflow_rom, label="ROM")
+            # bottom.plot(ts, outflow_srom, label="SROM", alpha=0.5)
+
+            # top.set_title("Mid Piston")
+            # bottom.set_title("Outflow")
+
+            # bottom.legend(ncol=2)
+
+            # top.grid(True)
+            # bottom.grid(True)
+
+            # plt.show()
 
             # -----------------------------------------------------------------
             # Compute mass conservation
