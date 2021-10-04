@@ -1,20 +1,21 @@
 from copy import deepcopy
-from functools import partial, reduce
+from functools import partial
+from pprint import pprint
 
 import fenics
 import numpy as np
-from romtime.base import RomSolutionsStorage
-from romtime.fom.nonlinear import OneDimensionalBurgers
 from dolfin.cpp.la import Matrix, Vector
+from romtime.base import RomSolutionsStorage
 from romtime.conventions import (
     BDF,
+    OperatorType,
     PistonParameters,
     RomParameters,
-    OperatorType,
     Stage,
     Treewalk,
 )
 from romtime.fom.base import OneDimensionalSolver
+from romtime.fom.nonlinear import OneDimensionalBurgers
 from romtime.utils import (
     array_to_function,
     bilinear_to_csr,
@@ -294,6 +295,8 @@ class RomConstructor(Reductor):
             raise NotImplementedError(
                 "You need to provide a number of mu-snapshots or a space."
             )
+
+        pprint(space)
 
         # ---------------------------------------------------------------------
         # Put up the solver and start loop in parameter space
@@ -685,6 +688,7 @@ class RomConstructorMoving(RomConstructor):
 class RomConstructorNonlinear(RomConstructorMoving):
 
     # This sets an upper limit for the amount of forcing in the system
+    PISTON_MACH_MIN = 0.15
     PISTON_MACH_MAX = 0.4
 
     def __init__(self, fom: OneDimensionalBurgers, grid: dict, name=None) -> None:
@@ -713,7 +717,10 @@ class RomConstructorNonlinear(RomConstructorMoving):
         grid = self.grid
 
         piston_mach_space = self.compute_piston_mach_number_space(
-            grid=grid, num=num, mach_max=self.PISTON_MACH_MAX
+            grid=grid,
+            num=num,
+            mach_min=self.PISTON_MACH_MIN,
+            mach_max=self.PISTON_MACH_MAX,
         )
 
         # This needs to be a high number because we need to sample
@@ -768,7 +775,7 @@ class RomConstructorNonlinear(RomConstructorMoving):
         return mach
 
     @staticmethod
-    def compute_piston_mach_number_space(grid, num, mach_max=None):
+    def compute_piston_mach_number_space(grid, num, mach_min=None, mach_max=None):
 
         A0 = PistonParameters.A0
         OMEGA = PistonParameters.OMEGA
@@ -781,7 +788,10 @@ class RomConstructorNonlinear(RomConstructorMoving):
             support[var] = {"min": min(_support), "max": max(_support)}
 
         # Less input into the system, maximum linearity
-        mach_min = support[DELTA]["min"] * support[OMEGA]["min"] / support[A0]["max"]
+        if mach_min is None:
+            mach_min = (
+                support[DELTA]["min"] * support[OMEGA]["min"] / support[A0]["max"]
+            )
 
         # Maximum input into the system, maximum linearity
         if mach_max is None:
