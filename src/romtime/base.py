@@ -1,9 +1,19 @@
 from copy import deepcopy
-
+import pickle
 import numpy as np
 from numpy import interp
 
 from romtime.conventions import PistonParameters
+
+
+class SolutionsStorageNames:
+
+    DOMAIN = "domain"
+    FOM = "fom"
+    MU = "mu"
+    ROM = "rom"
+    SNAPSHOTS = "snapshots"
+    TIMESTEPS = "ts"
 
 
 class SolutionsStorage:
@@ -26,6 +36,10 @@ class SolutionsStorage:
         del self.snapshots
         del self.fom
         del self.domain
+
+    def to_pickle(self, name):
+        with open(name, mode="wb") as fp:
+            pickle.dump(self, fp)
 
     def compute_at(self, x):
 

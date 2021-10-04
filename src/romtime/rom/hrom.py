@@ -12,6 +12,7 @@ from romtime.conventions import (
     FIG_KWARGS,
     Errors,
     OperatorType,
+    ProbeLocations,
     ProblemType,
     RomParameters,
     Stage,
@@ -210,7 +211,10 @@ class HyperReducedOrderModelFixed:
         if path is None:
             path = StorageNames.VALIDATION_SOLUTIONS
 
-        self.validation_solutions = read_pickle(path)
+        try:
+            self.validation_solutions = read_pickle(path)
+        except FileNotFoundError:
+            print("Validation solutions are not defined.")
 
     def setup(self):
         """Setup up FOM and ROM structures."""
@@ -334,7 +338,14 @@ class HyperReducedOrderModelFixed:
         # Read ROB basis
         print("Loading RB Basis from disk ...")
 
-        mu_space = read_json(StorageNames.MU_SPACE)
+        try:
+            mu_space = read_json(StorageNames.MU_SPACE)
+        except FileNotFoundError:
+            mu_space = {
+                Stage.OFFLINE: list(),
+                Stage.ONLINE: list(),
+                Stage.VALIDATION: list(),
+            }
 
         # ROM
         # rom = self.rom
@@ -346,6 +357,8 @@ class HyperReducedOrderModelFixed:
         srom = self.srom
         basis_srom = read_pickle(StorageNames.SROM)
         N_srom = self.rom_params[RomParameters.SROM_KEEP]
+        print(f"Loaded basis size: {basis_srom.shape[1]}.")
+        print(f"Required SROM size: {N_srom}.")
         basis_srom = basis_srom[:, :N_srom]
         srom.load_from_basis(basis=basis_srom, mu_space=mu_space)
         del basis_srom
@@ -532,39 +545,18 @@ class HyperReducedOrderModelFixed:
                 name_probes = f"probes_{which}_fom_{idx_mu}.csv"
                 probes = fom.save_probes(name=name_probes)
 
-            # piston = probes["L"].squeeze()
-            # piston.name = "piston"
-
-            # half_fom = fom.solutions.compute_at(x=0.5)
-            # half_rom = rom.solutions.compute_at(x=0.5)
-            # half_srom = srom.solutions.compute_at(x=0.5)
-
-            # outflow_fom = fom.solutions.compute_at(x=0.0)
-            # outflow_rom = rom.solutions.compute_at(x=0.0)
-            # outflow_srom = srom.solutions.compute_at(x=0.0)
-
-            # fig, (top, bottom) = plt.subplots(nrows=2)
-
-            # ts = fom.timesteps
-
-            # top.plot(ts, half_fom, label="FOM", linestyle="--")
-            # top.plot(ts, half_rom, label="ROM")
-            # top.plot(ts, half_srom, label="SROM", alpha=0.5)
-
-            # bottom.plot(ts, piston.values, label="piston", linestyle="-.", alpha=0.5)
-            # bottom.plot(ts, outflow_fom, label="FOM", linestyle="--")
-            # bottom.plot(ts, outflow_rom, label="ROM")
-            # bottom.plot(ts, outflow_srom, label="SROM", alpha=0.5)
-
-            # top.set_title("Mid Piston")
-            # bottom.set_title("Outflow")
-
-            # bottom.legend(ncol=2)
-
-            # top.grid(True)
-            # bottom.grid(True)
-
-            # plt.show()
+                piston = probes["L"].squeeze()
+                piston.name = "piston"
+                name_probes_comparison = (
+                    f"probes_comparison_rom_{rom.N}_srom_{srom.N}_{which}_{idx_mu}.csv"
+                )
+                self.save_fom_rom_probes(
+                    name=name_probes_comparison,
+                    piston=piston,
+                    fom=fom,
+                    rom=rom,
+                    srom=srom,
+                )
 
             # -----------------------------------------------------------------
             # Compute mass conservation
@@ -575,7 +567,9 @@ class HyperReducedOrderModelFixed:
             output_rom = fom.compute_mass_conservation(
                 mu=mu, ts=timesteps, solutions=rom_sols, which=ProblemType.ROM
             )
-            name_rom = f"mass_conservation_{which}_rom_{idx_mu}.csv"
+            name_rom = (
+                f"mass_conservation_rom_{rom.N}_srom_{srom.N}_{which}_rom_{idx_mu}.csv"
+            )
             dump_csv(name_rom, obj=output_rom)
 
             # FOM
@@ -590,6 +584,61 @@ class HyperReducedOrderModelFixed:
             self.errors[which] = rom_fom_errors
         else:
             self.errors[which] = rom.errors_rom
+
+    @staticmethod
+    def compare_models(x, piston, ts, fom, rom, srom):
+
+        x_fom = fom.solutions.compute_at(x=x)
+        x_rom = rom.solutions.compute_at(x=x)
+        x_srom = srom.solutions.compute_at(x=x)
+
+        data = np.vstack([x_fom, x_rom, x_srom]).T
+
+        columns = [ProblemType.FOM, ProblemType.ROM, ProblemType.SROM]
+        df = pd.DataFrame(data=data, index=ts, columns=columns)
+
+        df[ProbeLocations.PISTON] = piston
+
+        return df
+
+    def save_fom_rom_probes(self, name, piston, fom, rom, srom):
+        """Compare models at the ouflow and piston halfway.
+
+        Parameters
+        ----------
+        name : str
+        piston : pandas.Series
+        fom : OneDimensionalSolver-like
+        rom : RomConstructor-like
+        srom : RomConstructor-like
+
+        Returns
+        -------
+        outflow : pandas.DataFrame
+        half : pandas.DataFrame
+        """
+
+        ts = rom.solutions.ts
+
+        compare_models = partial(
+            self.compare_models,
+            fom=fom,
+            rom=rom,
+            srom=srom,
+            piston=piston,
+            ts=ts,
+        )
+
+        outflow = compare_models(x=0.0)
+        half = compare_models(x=0.5)
+
+        name_outflow = "_".join([ProbeLocations.OUTFLOW, name])
+        name_half = "_".join([ProbeLocations.MIDDLE, name])
+
+        outflow.to_csv(name_outflow)
+        half.to_csv(name_half)
+
+        return outflow, half
 
     def generate_summary(self):
         """Generate reduction summaries."""
