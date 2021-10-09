@@ -16,6 +16,8 @@ class ProblemType:
 
     FOM = "fom"
     ROM = "rom"
+    SROM = "srom"
+    HROM = "hrom"
 
 
 class MassConservation:
@@ -118,6 +120,13 @@ class RomParameters:
     TOL_MU = "tol_mu"
     TOL_TIME = "tol_time"
     TS = "ts"
+
+
+class ProbeLocations:
+
+    OUTFLOW = "outflow"
+    MIDDLE = "halfway"
+    PISTON = "piston"
 
 
 class PistonParameters:

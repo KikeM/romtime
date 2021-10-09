@@ -365,9 +365,9 @@ class OneDimensionalSolver(ABC):
         solver = fenics.KrylovSolver("gmres", "ilu")
 
         prm = solver.parameters
-        prm["absolute_tolerance"] = 1e-7
-        prm["relative_tolerance"] = 1e-4
-        prm["maximum_iterations"] = 1000
+        prm["absolute_tolerance"] = 1e-10
+        prm["relative_tolerance"] = 1e-10
+        prm["maximum_iterations"] = int(1e7)
 
         return solver
 

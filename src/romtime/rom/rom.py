@@ -32,7 +32,7 @@ from .pod import orth
 
 class RomConstructor(Reductor):
 
-    GMRES_OPTIONS = dict(atol=1e-7, tol=1e-7, maxiter=1e4)
+    GMRES_OPTIONS = dict(atol=1e-10, tol=1e-10, maxiter=1e6)
 
     def __init__(self, fom: OneDimensionalSolver, grid: dict, name=None) -> None:
 
