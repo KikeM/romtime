@@ -38,7 +38,8 @@ class SolutionsStorage:
         del self.domain
 
     def to_pickle(self, name):
-        with open(name, mode="wb") as fp:
+        _name = name + ".pkl"
+        with open(_name, mode="wb") as fp:
             pickle.dump(self, fp)
 
     def compute_at(self, x):

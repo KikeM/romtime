@@ -182,6 +182,9 @@ class OneDimensionalSolver(ABC):
             [function_to_array(element) for element in list(my_dict.values())]
         ).T
 
+    def dump_solutions(self, name):
+        self.solutions.to_pickle(name)
+
     def build_cell_to_dofs(self):
         """Create mapping between mesh cells and dofs."""
 
@@ -759,7 +762,7 @@ class OneDimensionalSolver(ABC):
             # Assemble algebraic problem
             # -----------------------------------------------------------------
             # LHS
-            Mh_mat, Kh_mat = self.assemble_system(mu, t, u_n, bdf)
+            Mh_mat, Kh_mat = self.assemble_system(mu, t, bdf, u_n, u_n1)
 
             # RHS
             bh_vec = self.assemble_system_rhs(mu, t, Mh_mat, u_n, u_n1)

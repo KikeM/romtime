@@ -315,13 +315,24 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         self.move_mesh(back=True)
         return gh
 
-    def assemble_system(self, mu, t, u_n=None, bdf=1.0):
+    def assemble_system(self, mu, t, bdf=1.0, u_n=None, u_n1=None):
 
         Mh_mat = self.assemble_mass(mu=mu, t=t)
         Ah_mat = self.assemble_stiffness(mu=mu, t=t)
-        Ch_mat = self.assemble_nonlinear(mu=mu, t=t, u_n=u_n)
         Chat_mat = self.assemble_nonlinear_lifting(mu=mu, t=t)
         Bh_mat = self.assemble_convection(mu=mu, t=t)
+
+        # ---------------------------------------------------------------------
+        # Extrapolate function from the past
+        # First order
+        if u_n1 is None:
+            u_star = u_n
+        # Second order
+        else:
+            u_star = fenics.Function(self.V)
+            u_star.assign(2.0 * u_n - u_n1)
+
+        Ch_mat = self.assemble_nonlinear(mu=mu, t=t, u_n=u_star)
 
         dt = self.dt
 
