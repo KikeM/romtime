@@ -3,7 +3,6 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 from romtime.conventions import ProblemType, Stage, Treewalk
-from romtime.parameters import round_parameters
 from sklearn.model_selection import ParameterSampler
 
 
@@ -88,9 +87,6 @@ class Reductor:
         idx : int
             Parameter index in the mu-space.
         """
-        # I temporarily remove this,
-        # it is removing viscosity when too small,
-        # mu = round_parameters(sample=mu, num=3)
         self.mu_space[step].append(mu)
 
         idx = self.mu_space[step].index(mu)

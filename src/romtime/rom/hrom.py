@@ -328,6 +328,9 @@ class HyperReducedOrderModelFixed:
 
         self.validation_solutions = fom_solutions
 
+        print(f"(ROM) N = {rom.N}")
+        print(f"(SROM) N = {srom.N}")
+
     def start_from_existing_basis(self):
 
         # ---------------------------------------------------------------------
