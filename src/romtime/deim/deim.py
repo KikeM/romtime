@@ -1,7 +1,13 @@
 from copy import deepcopy
 import matplotlib.pyplot as plt
 import numpy as np
-from romtime.conventions import EmpiricalInterpolation, FIG_KWARGS, RomParameters, Stage
+from romtime.conventions import (
+    EmpiricalInterpolation,
+    FIG_KWARGS,
+    RomParameters,
+    Stage,
+    Treewalk,
+)
 from romtime.rom.base import Reductor
 from romtime.rom.pod import orth
 from romtime.utils import dump_pickle, functional_to_array, plot, read_pickle
@@ -66,9 +72,9 @@ class DiscreteEmpiricalInterpolation(Reductor):
         self.basis_rom = None
         self.snapshots = None
 
-        self.basis_pickle_name = self.define_basis_name()
+        self.basis_pickle_name = self.__define_basis_name__()
 
-    def define_basis_name(self):
+    def __define_basis_name__(self):
 
         name = "_".join(self.name.lower().split())
         type = self.TYPE.lower()
