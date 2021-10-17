@@ -407,6 +407,7 @@ class RomConstructor(Reductor):
         uh = self.to_fom_vector(uN_n)
 
         BDF_SCHEME = fom.BDF_SCHEME
+        uh_n1 = None
         if BDF_SCHEME == BDF.TWO:
             uN_n1 = np.zeros_like(uN_n)
         else:
@@ -437,7 +438,7 @@ class RomConstructor(Reductor):
 
             # -----------------------------------------------------------------
             # Assemble linear system
-            MN_mat, KN_mat = self.assemble_system(mu, t, uh, bdf)
+            MN_mat, KN_mat = self.assemble_system(mu, t, bdf, uh, uh_n1)
             bN_vec = self.assemble_system_rhs(mu, t, MN_mat, uN_n, uN_n1)
 
             # -----------------------------------------------------------------
@@ -446,9 +447,13 @@ class RomConstructor(Reductor):
 
             rom_coeffs.append(uN)
 
+            uh = self.to_fom_vector(uN)
+
             # Update solution
             if BDF_SCHEME == BDF.TWO:
+                # This is for the nonlinear term
                 uN_n1 = uN_n.copy()
+                uh_n1 = self.to_fom_vector(uN_n1)
             uN_n = uN.copy()
 
             # -----------------------------------------------------------------
@@ -464,7 +469,6 @@ class RomConstructor(Reductor):
             gh = function_to_array(gh)
 
             # Project ROM solution in FOM space
-            uh = self.to_fom_vector(uN)
             uc_h = uh + gh
 
             # -----------------------------------------------------------------
@@ -512,7 +516,7 @@ class RomConstructor(Reductor):
         bN_vec = MN_mat.dot(uN_n) + dt * fN_vec
         return bN_vec
 
-    def assemble_system(self, mu, t, uh=None):
+    def assemble_system(self, mu, t, bdf=None, uh=None, uh_n1=None):
 
         MN_mat = self.assemble_mass(mu=mu, t=t)
         AN_mat = self.assemble_stiffness(mu=mu, t=t)
@@ -823,7 +827,7 @@ class RomConstructorNonlinear(RomConstructorMoving):
         loc = fom.L - 10.0 * fenics.DOLFIN_EPS
         self.probes[idx_L].append(uh(loc))
 
-    def assemble_system(self, mu, t, uh, bdf=1.0):
+    def assemble_system(self, mu, t, bdf=1.0, uh=None, uh_n1=None):
         """Assemble algebraic ROM system.
 
         Parameters
@@ -841,7 +845,15 @@ class RomConstructorNonlinear(RomConstructorMoving):
         MN_mat = self.assemble_mass(mu=mu, t=t)
         AN_mat = self.assemble_stiffness(mu=mu, t=t)
         CN_mat = self.assemble_convection(mu=mu, t=t)
-        NN_mat = self.assemble_nonlinear(mu=mu, t=t, uh=uh)
+
+        # First order
+        if uh_n1 is None:
+            u_star = uh
+        # Second order
+        else:
+            u_star = 2.0 * uh - uh_n1
+
+        NN_mat = self.assemble_nonlinear(mu=mu, t=t, uh=u_star)
         NhatN_mat = self.assemble_nonlinear_lifting(mu=mu, t=t)
 
         dt = self.fom.dt
