@@ -350,22 +350,20 @@ class HyperReducedOrderModelFixed:
                 Stage.VALIDATION: list(),
             }
 
-        # ROM
-        # rom = self.rom
-        # basis_rom = read_pickle(StorageNames.ROM)
-        # rom.load_from_basis(basis=basis_rom, mu_space=mu_space)
-        # del basis_rom
-
         # S-ROM
         srom = self.srom
         basis_srom = read_pickle(StorageNames.SROM)
         N_srom = self.rom_params[RomParameters.SROM_KEEP]
         print(f"Loaded basis size: {basis_srom.shape[1]}.")
         print(f"Required SROM size: {N_srom}.")
-        basis_srom = basis_srom[:, :N_srom]
+        if N_srom is not None:
+            basis_srom = basis_srom[:, :N_srom]
+
         srom.load_from_basis(basis=basis_srom, mu_space=mu_space)
+
         del basis_srom
 
+        # ROM
         self.rom = srom.truncate(self.rom_params[RomParameters.SROM_TRUNCATE])
 
         print(f"S-ROM size: {self.srom.basis.shape}")

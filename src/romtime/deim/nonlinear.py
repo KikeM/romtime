@@ -1,6 +1,8 @@
+from copy import deepcopy
+from functools import partial
 import fenics
 import numpy as np
-from romtime.conventions import EmpiricalInterpolation, RomParameters, Stage
+from romtime.conventions import EmpiricalInterpolation, RomParameters, Stage, Treewalk
 from romtime.rom.base import Reductor
 from romtime.rom.pod import orth
 from romtime.utils import (
@@ -37,6 +39,63 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
 
         # External function basis
         self.u_n = None
+
+    def truncate(self, n):
+        """Truncate Nonlinear MDEIM.
+
+        Parameters
+        ----------
+        n : int
+            Number of basis elements to remove.
+
+        Returns
+        -------
+        truncated : MatrixDiscreteEmpiricalInterpolationNonlinear
+            Truncated Nonlinear MDEIM.
+        """
+
+        # ---------------------------------------------------------------------
+        # Create truncated MDEIM
+        name = "S-" + self.name
+
+        truncated = self.__class__(
+            assemble=self.assemble,
+            grid=self.grid,
+            tree_walk_params=self.tree_walk_params,
+            name=name,
+        )
+        Reductor.setup(self=truncated, rnd=self.random_state)
+
+        # ---------------------------------------------------------------------
+        # Copy matrix topology
+        truncated.rows = self.rows
+        truncated.cols = self.cols
+
+        # ---------------------------------------------------------------------
+        # Remove modes
+        N = self.N
+        assert (
+            n < N
+        ), "You want to remove too many modes from S-NonlinearMDEIM to create NonlinearMDEIM."
+        print(f"Truncating basis ... from {N} to {N-n}.")
+        truncated.basis_fom = self.basis_fom[:, : N - n]
+
+        # ---------------------------------------------------------------------
+        # Store interpolation matrix
+        dofs, P = truncated.build_interpolation_mesh()
+        truncated.store_dofs(dofs)
+        truncated.PT_U = np.matmul(P.T, truncated.basis_fom)
+
+        # Clean-up
+        del P
+
+        # ---------------------------------------------------------------------
+        # Copy data structures
+        truncated.mu_space = deepcopy(self.mu_space)
+        truncated.report = deepcopy(self.report)
+        truncated.report[Stage.OFFLINE][Treewalk.BASIS_FINAL] = truncated.N
+
+        return truncated
 
     def get_matrix_topology(self, mu, t, u_n):
         """Get mesh rows and columns arrangement.
@@ -83,7 +142,7 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
         sampler = self.build_sampling_space(num=1)
         mu = list(sampler)[0]
 
-        # Constant function to make sure we span all the possibilities
+        # Non-constant function to make sure we span all the possibilities
         one = fenics.Expression("x[0]", degree=1)
         u_n = fenics.interpolate(one, V)
         rows, cols = self.get_matrix_topology(mu=mu, t=1.0, u_n=u_n)
@@ -419,12 +478,17 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
 
         msg_mu = f"({self.TYPE}-{self.name}-Evaluation) Walk in mu"
         msg_time = f"({self.TYPE}-Evaluation) Walk in time"
+        msg_psi = f"({self.TYPE}-Evaluation) Walk in reduced basis"
         # ---------------------------------------------------------------------
         # Loop through parameter space
         # N_psi to compute the mean erros across the basis elements
         N_psi = self.u_n.shape[1]
         u_n = self.u_n
-        for mu in tqdm(space, desc=msg_mu, leave=True):
+
+        assemble_snapshot = self.assemble_snapshot
+        _interpolate = self._interpolate
+        _compute_error = self._compute_error
+        for mu in tqdm(space, desc=msg_mu, leave=False):
             mu_idx, mu = self.add_mu(step=Stage.ONLINE, mu=mu)
 
             # -----------------------------------------------------------------
@@ -440,19 +504,19 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
                 # -------------------------------------------------------------
                 # Loop through all the basis elements
                 error = 0.0
-                for idx_psi in range(N_psi):
+                for idx_psi in tqdm(range(N_psi), desc=msg_psi, leave=False):
 
                     psi = u_n[:, idx_psi]
 
                     # ---------------------------------------------------------
                     # Exact solution
-                    fh = self.assemble_snapshot(mu=mu, t=t, u_n=psi)
+                    fh = assemble_snapshot(mu=mu, t=t, u_n=psi)
                     # ---------------------------------------------------------
                     # Compute approximation
-                    fh_appr = self._interpolate(mu=mu, t=t, u_n=psi, which=self.FOM)
+                    fh_appr = _interpolate(mu=mu, t=t, u_n=psi, which=self.FOM)
                     # ---------------------------------------------------------
                     # Error
-                    error += self._compute_error(u=fh_appr, ue=fh)
+                    error += _compute_error(u=fh_appr, ue=fh)
 
                 # -------------------------------------------------------------
                 # Take average error over each basis vector
