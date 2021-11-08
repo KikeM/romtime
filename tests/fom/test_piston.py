@@ -335,8 +335,8 @@ def test_nonlinear_mdeim(parameters, grid_base, grid):
     # Nonlinear MDEIM
     tree_walk = {"ts": ts, "num_snapshots": 5}
     mdeim_nonlinear = MatrixDiscreteEmpiricalInterpolationNonlinear(
-        assemble=fom.assemble_nonlinear,
-        name=OperatorType.NONLINEAR,
+        assemble=fom.assemble_trilinear,
+        name=OperatorType.TRILINEAR,
         grid=grid,
         tree_walk_params=tree_walk,
     )
@@ -444,7 +444,7 @@ def test_hrom():
         OperatorType.MASS: False,
         OperatorType.STIFFNESS: False,
         OperatorType.CONVECTION: False,
-        OperatorType.NONLINEAR: False,
+        OperatorType.TRILINEAR: False,
         OperatorType.NONLINEAR_LIFTING: False,
         OperatorType.RHS: False,
     }

@@ -2,7 +2,7 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-from romtime.conventions import ProblemType, Stage, Treewalk
+from romtime.conventions import ProblemType, Stage, Treewalk, TreewalkNonlinear
 from sklearn.model_selection import ParameterSampler
 
 
@@ -129,15 +129,27 @@ class Reductor:
         """
         self.random_state = rnd
 
+        # Reduced Basis
         self.report[Stage.OFFLINE][self.BASIS_AFTER_WALK] = None
-
+        
         self.report[Stage.OFFLINE][self.BASIS_FINAL] = None
         self.report[Stage.OFFLINE][self.SPECTRUM_MU] = None
         self.report[Stage.OFFLINE][self.ENERGY_MU] = None
-
+        
         self.report[Stage.OFFLINE][self.BASIS_TIME] = dict()
         self.report[Stage.OFFLINE][self.SPECTRUM_TIME] = dict()
         self.report[Stage.OFFLINE][self.ENERGY_TIME] = dict()
+
+        # Nonlinear term
+        self.report[Stage.OFFLINE][TreewalkNonlinear.BASIS_AFTER_WALK] = None
+        
+        self.report[Stage.OFFLINE][TreewalkNonlinear.BASIS_FINAL] = None
+        self.report[Stage.OFFLINE][TreewalkNonlinear.SPECTRUM_MU] = None
+        self.report[Stage.OFFLINE][TreewalkNonlinear.ENERGY_MU] = None
+        
+        self.report[Stage.OFFLINE][TreewalkNonlinear.BASIS_TIME] = dict()
+        self.report[Stage.OFFLINE][TreewalkNonlinear.SPECTRUM_TIME] = dict()
+        self.report[Stage.OFFLINE][TreewalkNonlinear.ENERGY_TIME] = dict()
 
     def create_errors_summary(self):
 

@@ -2,7 +2,13 @@ from copy import deepcopy
 from functools import partial
 import fenics
 import numpy as np
-from romtime.conventions import EmpiricalInterpolation, RomParameters, Stage, Treewalk
+from romtime.conventions import (
+    FIG_KWARGS,
+    EmpiricalInterpolation,
+    RomParameters,
+    Stage,
+    Treewalk,
+)
 from romtime.rom.base import Reductor
 from romtime.rom.pod import orth
 from romtime.utils import (
@@ -162,6 +168,8 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
 
         # ---------------------------------------------------------------------
         # Save non-linear basis
+        if len(u_n.shape) == 1:
+            u_n = np.reshape(u_n, (u_n.shape[0], 1))
         self.u_n = u_n
 
         # ---------------------------------------------------------------------
@@ -178,7 +186,7 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
 
         Vfh, sigmas = self.tree_walk(
             ts=ts,
-            normalize=False,
+            normalize=True,
             num_mu=num_mu,
             num_t=num_t,
             num_basis=num_basis,
@@ -459,15 +467,15 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
 
         return phi, sigmas, energy
 
-    def evaluate(self, ts, num=None, mu_space=None):
+    def evaluate(self, ts, funcs=None, num=None, mu_space=None):
         """Evaluate online interpolation.
 
         Parameters
         ----------
-        num : int
-            Number of parameters to sample.
         ts : list
             Time instants to sample.
+        num : int
+            Number of parameters to sample.
         """
 
         if mu_space:
@@ -482,12 +490,16 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
         # ---------------------------------------------------------------------
         # Loop through parameter space
         # N_psi to compute the mean erros across the basis elements
-        N_psi = self.u_n.shape[1]
-        u_n = self.u_n
+        if funcs is None:
+            funcs = self.u_n
+
+        N_psi = funcs.shape[1]
+        u_n = funcs
 
         assemble_snapshot = self.assemble_snapshot
         _interpolate = self._interpolate
         _compute_error = self._compute_error
+
         for mu in tqdm(space, desc=msg_mu, leave=False):
             mu_idx, mu = self.add_mu(step=Stage.ONLINE, mu=mu)
 
@@ -524,4 +536,20 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
                 self.errors_rom[mu_idx].append(error)
 
             # -----------------------------------------------------------------
-            self.errors_rom[mu_idx] = np.array(self.errors_rom[mu_idx])
+            as_array = np.array(self.errors_rom[mu_idx])
+            self.errors_rom[mu_idx] = as_array
+
+            # import pandas as pd
+            # import matplotlib.pyplot as plt
+
+            # check = pd.concat([pd.Series(fh), pd.Series(fh_appr)], axis=1)
+            # diff = check.diff(axis=1).dropna(axis=1).abs().squeeze()
+            # check["diff"] = diff
+            # check.to_csv("check.csv")
+
+            # diff.plot(grid=True, logy=True)
+            # plt.savefig("check.png", **FIG_KWARGS)
+            # plt.close()
+            # import sys
+
+            # sys.exit()

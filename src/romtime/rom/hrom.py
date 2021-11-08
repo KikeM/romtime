@@ -18,6 +18,7 @@ from romtime.conventions import (
     Stage,
     StorageNames,
     Treewalk,
+    TreewalkNonlinear,
 )
 from romtime.deim import (
     DiscreteEmpiricalInterpolation,
@@ -73,7 +74,8 @@ class HyperReducedOrderModelFixed:
         self.mdeim_stiffness = None
         self.mdeim_convection = None
         self.mdeim_nonlinear = None
-        self.mdeim_nonlinear_lifting = None
+        self.mdeim_trilinear = None
+        self.mdeim_trilinear_lifting = None
 
         self.deim_runned = False
         self.rom_runned = False
@@ -107,7 +109,8 @@ class HyperReducedOrderModelFixed:
         del self.mdeim_stiffness
         del self.mdeim_convection
         del self.mdeim_nonlinear
-        del self.mdeim_nonlinear_lifting
+        del self.mdeim_trilinear
+        del self.mdeim_trilinear_lifting
 
         del self.deim_runned
         del self.rom_runned
@@ -154,6 +157,13 @@ class HyperReducedOrderModelFixed:
 
         dump_pickle(path_rom, self.basis)
         dump_pickle(path_srom, self.srom.basis)
+
+    def dump_nonlinear_basis(self, path=None):
+        """Pickle nonlinear term basis."""
+
+        dump_pickle(
+            f"basis_fom_n-mdeim_{OperatorType.TRILINEAR}.pkl", self.srom.basis_nonlinear
+        )
 
     def dump_validation_fom(self, path=None):
         """Pickle validation FOM solutions."""
@@ -375,8 +385,36 @@ class HyperReducedOrderModelFixed:
         self.mdeim_mass.load_fom_basis()
         self.mdeim_stiffness.load_fom_basis()
         self.mdeim_convection.load_fom_basis()
-        self.mdeim_nonlinear.load_fom_basis()
-        self.mdeim_nonlinear_lifting.load_fom_basis()
+        self.mdeim_trilinear_lifting.load_fom_basis()
+
+        N_mdeim_trilinear = self.rom_params[RomParameters.NMDEIM_SIZE]
+        self.mdeim_trilinear.load_fom_basis(keep=N_mdeim_trilinear)
+
+        # ---------------------------------------------------------------------
+        # Connect (M)DEIM with ROM models
+        # Include the reduction for the algebraic operators
+
+        operators = [
+            OperatorType.LIFTING,
+            OperatorType.MASS,
+            OperatorType.STIFFNESS,
+            OperatorType.CONVECTION,
+            OperatorType.NONLINEAR_LIFTING,
+            OperatorType.TRILINEAR,
+        ]
+
+        deims = [
+            self.deim_rhs,
+            self.mdeim_mass,
+            self.mdeim_stiffness,
+            self.mdeim_convection,
+            self.mdeim_trilinear_lifting,
+            self.mdeim_trilinear,
+        ]
+
+        for reductor, which in zip(deims, operators):
+            for _rom in [self.rom, self.srom]:
+                _rom.add_hyper_reductor(reductor=reductor, which=which)
 
     def run_offline_hyperreduction(self, mu_space=None, evaluate=True):
         """Generate collateral basis for linear algebraic operators."""
@@ -459,9 +497,9 @@ class HyperReducedOrderModelFixed:
         self.evaluate_deim_model(object=self.mdeim_mass, mu_space=mu_space)
         self.evaluate_deim_model(object=self.mdeim_stiffness, mu_space=mu_space)
         self.evaluate_deim_model(object=self.mdeim_convection, mu_space=mu_space)
-        self.evaluate_deim_model(object=self.mdeim_nonlinear_lifting, mu_space=mu_space)
+        self.evaluate_deim_model(object=self.mdeim_trilinear_lifting, mu_space=mu_space)
 
-        self.evaluate_deim_model(object=self.mdeim_nonlinear, mu_space=mu_space)
+        self.evaluate_deim_model(object=self.mdeim_trilinear, mu_space=mu_space)
 
     def _evaluate(self, which, mu_space=None):
         """(H)ROM evaluation for a set of parameters."""
@@ -553,9 +591,7 @@ class HyperReducedOrderModelFixed:
 
                 piston = probes["L"].squeeze()
                 piston.name = "piston"
-                name_probes_comparison = (
-                    f"probes_comparison_rom_{rom.N}_srom_{srom.N}_{which}_{idx_mu}.csv"
-                )
+                name_probes_comparison = f"probes_comparison_rom_{rom.N}_srom_{srom.N}_trilinear_{self.mdeim_trilinear.N}_{which}_{idx_mu}.csv"
                 self.save_fom_rom_probes(
                     name=name_probes_comparison,
                     piston=piston,
@@ -573,9 +609,7 @@ class HyperReducedOrderModelFixed:
             output_rom = fom.compute_mass_conservation(
                 mu=mu, ts=timesteps, solutions=rom_sols, which=ProblemType.ROM
             )
-            name_rom = (
-                f"mass_conservation_rom_{rom.N}_srom_{srom.N}_{which}_rom_{idx_mu}.csv"
-            )
+            name_rom = f"mass_conservation_rom_{rom.N}_srom_{srom.N}_mdeim_{self.mdeim_trilinear.N}_{which}_rom_{idx_mu}.csv"
             dump_csv(name_rom, obj=output_rom)
 
             # FOM
@@ -655,21 +689,35 @@ class HyperReducedOrderModelFixed:
         summary_errors_deim = self.summary_errors_deim
         mu_space_deim = self.mu_space_deim
 
+        OFFLINE = Stage.OFFLINE
+        # ---------------------------------------------------------------------
+        # ROM summary
         rom = self.rom
         BASIS_WALK = rom.BASIS_AFTER_WALK
         BASIS_FINAL = rom.BASIS_FINAL
         SPECTRUM_MU = rom.SPECTRUM_MU
         ENERGY_MU = rom.ENERGY_MU
-        OFFLINE = Stage.OFFLINE
 
-        # ---------------------------------------------------------------------
-        # ROM summary
         report = rom.report[OFFLINE]
         REDUCED_BASIS = OperatorType.REDUCED_BASIS
         summary_basis[REDUCED_BASIS][BASIS_WALK] = report[BASIS_WALK]
         summary_basis[REDUCED_BASIS][BASIS_FINAL] = report[BASIS_FINAL]
         summary_sig[REDUCED_BASIS][SPECTRUM_MU] = report[SPECTRUM_MU]
         summary_energy[REDUCED_BASIS][ENERGY_MU] = report[ENERGY_MU]
+
+        # ---------------------------------------------------------------------
+        # Nonlinear operator summary
+        N_BASIS_WALK = TreewalkNonlinear.BASIS_AFTER_WALK
+        N_BASIS_FINAL = TreewalkNonlinear.BASIS_FINAL
+        N_SPECTRUM_MU = TreewalkNonlinear.SPECTRUM_MU
+        N_ENERGY_MU = TreewalkNonlinear.ENERGY_MU
+
+        report = rom.report[OFFLINE]
+        TRILINEAR = OperatorType.TRILINEAR
+        summary_basis[TRILINEAR][BASIS_WALK] = report[N_BASIS_WALK]
+        summary_basis[TRILINEAR][BASIS_FINAL] = report[N_BASIS_FINAL]
+        summary_sig[TRILINEAR][SPECTRUM_MU] = report[N_SPECTRUM_MU]
+        summary_energy[TRILINEAR][ENERGY_MU] = report[N_ENERGY_MU]
 
         # ---------------------------------------------------------------------
         # Algebraic operators summary
@@ -686,9 +734,9 @@ class HyperReducedOrderModelFixed:
             self.deim_rhs,
             self.mdeim_mass,
             self.mdeim_stiffness,
-            self.mdeim_nonlinear,
+            # self.mdeim_nonlinear,
             self.mdeim_convection,
-            self.mdeim_nonlinear_lifting,
+            self.mdeim_trilinear_lifting,
         ]
         for operator in algebraic_operators:
             if operator is not None:
@@ -1010,11 +1058,18 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
             tree_walk_params=self.mdeim_params,
         )
 
-        mdeim_nonlinear_lifting = MatrixDiscreteEmpiricalInterpolation(
+        mdeim_trilinear_lifting = MatrixDiscreteEmpiricalInterpolation(
             name=OperatorType.NONLINEAR_LIFTING,
             assemble=fom.assemble_nonlinear_lifting,
             grid=grid,
             tree_walk_params=self.mdeim_params,
+        )
+
+        mdeim_trilinear = MatrixDiscreteEmpiricalInterpolationNonlinear(
+            name=OperatorType.TRILINEAR,
+            assemble=fom.assemble_trilinear,
+            grid=grid,
+            tree_walk_params=self.mdeim_nonlinear_params,
         )
 
         mdeim_nonlinear = MatrixDiscreteEmpiricalInterpolationNonlinear(
@@ -1025,11 +1080,13 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
         )
 
         mdeim_convection.setup(rnd=rnd)
-        mdeim_nonlinear_lifting.setup(rnd=rnd)
+        mdeim_trilinear_lifting.setup(rnd=rnd)
+        mdeim_trilinear.setup(rnd=rnd, V=fom.V)
         mdeim_nonlinear.setup(rnd=rnd, V=fom.V)
 
         self.mdeim_convection = mdeim_convection
-        self.mdeim_nonlinear_lifting = mdeim_nonlinear_lifting
+        self.mdeim_trilinear_lifting = mdeim_trilinear_lifting
+        self.mdeim_trilinear = mdeim_trilinear
         self.mdeim_nonlinear = mdeim_nonlinear
 
     def run_offline_hyperreduction(self, mu_space=None, u_n=None, evaluate=True):
@@ -1055,7 +1112,7 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
 
         if self.models[OperatorType.NONLINEAR_LIFTING]:
 
-            mdeim_nonlinear_lifting = self.mdeim_nonlinear_lifting
+            mdeim_nonlinear_lifting = self.mdeim_trilinear_lifting
 
             self._run_mdeim(
                 object=mdeim_nonlinear_lifting,
@@ -1066,20 +1123,24 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
 
         # ---------------------------------------------------------------------
         # Nonlinear operator
-        if self.models[OperatorType.NONLINEAR]:
+        if self.models[OperatorType.TRILINEAR]:
 
-            mdeim_nonlinear = self.mdeim_nonlinear
+            mdeim_trilinear = self.mdeim_trilinear
+
+            # Get basis from FOM
+            basis_mdeim = self.srom.basis_nonlinear
 
             # Use ROB basis vectors
             if u_n is None:
                 u_n = self.basis
 
             self._run_mdeim_nonlinear(
-                object=mdeim_nonlinear,
+                object=mdeim_trilinear,
                 mu_space=mu_space,
                 evaluate=evaluate,
-                which=OperatorType.NONLINEAR,
+                which=OperatorType.TRILINEAR,
                 u_n=u_n,
+                basis=basis_mdeim,
             )
 
         self.deim_moving_runned = True
@@ -1091,6 +1152,7 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
         which: str,
         mu_space: list,
         evaluate=False,
+        basis=None,
     ):
         """Generate N-MDEIM.
 
@@ -1104,13 +1166,16 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
             By default False.
         """
 
-        # Build collateral basis
-        object.run(u_n=u_n, mu_space=mu_space)
-        object.dump_fom_basis()
+        if basis is None:
+            # Build collateral basis
+            object.run(u_n=u_n, mu_space=mu_space)
+            object.dump_fom_basis()
 
-        # Online evaluation
-        if evaluate:
-            self.evaluate_deim_model(object=object, mu_space=mu_space)
+            # Online evaluation
+            if evaluate:
+                self.evaluate_deim_model(object=object, mu_space=mu_space)
+        else:
+            object.load_fom_basis(basis=basis)
 
         # Include the reduction for the algebraic operators
         for rom in [self.rom, self.srom]:

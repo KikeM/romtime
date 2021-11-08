@@ -130,11 +130,26 @@ class DiscreteEmpiricalInterpolation(Reductor):
 
         return new
 
-    def load_fom_basis(self):
+    def load_fom_basis(self, keep=None, basis=None):
         """Load FOM collateral basis and build interpolation mesh with it."""
 
-        filename = self.basis_pickle_name
-        self.basis_fom = read_pickle(filename)
+        print()
+        print("------------------------------------------")
+        print(f"Loading (M)DEIM basis for {self.name} ...")
+
+        if basis is None:
+            print(f"Loading from disk ...")
+            filename = self.basis_pickle_name
+            basis = read_pickle(filename)
+
+        print(f"Basis size is {basis.shape}")
+
+        if keep:
+            print(f"Keeping {keep} elements.")
+            basis = basis[:, :keep]
+
+        self.basis_fom = basis
+        print(f"(Actual) Basis size is {self.basis_fom.shape}")
 
         dofs, P = self.build_interpolation_mesh()
 
@@ -145,6 +160,8 @@ class DiscreteEmpiricalInterpolation(Reductor):
 
         # Clean-up
         del P
+
+        print()
 
     def dump_fom_basis(self, path=None):
         """Dump FOM collateral basis."""

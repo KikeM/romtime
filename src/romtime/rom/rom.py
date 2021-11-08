@@ -13,6 +13,7 @@ from romtime.conventions import (
     RomParameters,
     Stage,
     Treewalk,
+    TreewalkNonlinear,
 )
 from romtime.fom.base import OneDimensionalSolver
 from romtime.fom.nonlinear import OneDimensionalBurgers
@@ -42,6 +43,7 @@ class RomConstructor(Reductor):
         self.name = name
 
         self.basis = None
+        self.basis_nonlinear = None
 
         self.solutions = dict()
 
@@ -241,7 +243,7 @@ class RomConstructor(Reductor):
             self.mdeim_Ah = _reductor
         elif which == OperatorType.CONVECTION:
             self.mdeim_Ch = _reductor
-        elif which == OperatorType.NONLINEAR:
+        elif which == OperatorType.TRILINEAR:
             self.mdeim_Nh = _reductor
         elif which == OperatorType.NONLINEAR_LIFTING:
             self.mdeim_Nh_hat = _reductor
@@ -296,6 +298,7 @@ class RomConstructor(Reductor):
                 "You need to provide a number of mu-snapshots or a space."
             )
 
+        print("Building Reduced Basis ... ")
         pprint(space)
 
         # ---------------------------------------------------------------------
@@ -309,6 +312,7 @@ class RomConstructor(Reductor):
         # For validation phase
         fom_solutions = dict()
         basis_time = []
+        basis_nonlinear = []
         tol_t = tolerances.get(RomParameters.TOL_TIME, None)
         for mu in tqdm(space, desc="(ROM) Building reduced basis"):
 
@@ -335,13 +339,39 @@ class RomConstructor(Reductor):
             self.report[Stage.OFFLINE][Treewalk.ENERGY_TIME][mu_idx] = energy_time
             self.report[Stage.OFFLINE][Treewalk.BASIS_TIME][mu_idx] = _basis.shape[1]
 
+            # -----------------------------------------------------------------
+            # SVD - Nonlinear term
+            # We remove the first snapshot it is zero due to the initial condition
+            nonlinear_snapshots = np.array(fom.nonlinear_snapshots[1:]).T
+            # Enforce boundary entries do not matter
+            # TODO : Generalize boundary elements for MDEIM
+            nonlinear_snapshots[0, :] = 0.0
+            _basis_nonlinear, _sigmas_nonlinear, _energy_nonlinear = orth(
+                nonlinear_snapshots, tol=tol_t
+            )
+            basis_nonlinear.append(_basis_nonlinear)
+
+            self.report[Stage.OFFLINE][TreewalkNonlinear.SPECTRUM_TIME][
+                mu_idx
+            ] = _sigmas_nonlinear
+            self.report[Stage.OFFLINE][TreewalkNonlinear.ENERGY_TIME][
+                mu_idx
+            ] = _energy_nonlinear
+            self.report[Stage.OFFLINE][TreewalkNonlinear.BASIS_TIME][
+                mu_idx
+            ] = _basis.shape[1]
+
             if fom.RUNTIME_PROCESS:
                 name_probes = f"probes_offline_fom_{mu_idx}.csv"
                 fom.save_probes(name=name_probes)
 
         basis = np.hstack(basis_time)
+        basis_nonlinear = np.hstack(basis_nonlinear)
 
         self.report[Stage.OFFLINE][Treewalk.BASIS_AFTER_WALK] = basis.shape[1]
+        self.report[Stage.OFFLINE][
+            TreewalkNonlinear.BASIS_AFTER_WALK
+        ] = basis_nonlinear.shape[1]
 
         # ---------------------------------------------------------------------
         # Compress all the parameter basis
@@ -358,6 +388,22 @@ class RomConstructor(Reductor):
         self.report[Stage.OFFLINE][Treewalk.BASIS_FINAL] = basis.shape[1]
 
         self.basis = basis
+
+        # ---------------------------------------------------------------------
+        # Nonlinear Term - Compress all the parameter basis
+        tol_mu = tolerances.get(RomParameters.TOL_MU, None)
+        basis_nonlinear, sigmas_mu_nonlinear, energy_mu_nonlinear = orth(
+            basis_nonlinear,
+            normalize=False,
+        )
+
+        self.report[Stage.OFFLINE][TreewalkNonlinear.SPECTRUM_MU] = sigmas_mu_nonlinear
+        self.report[Stage.OFFLINE][TreewalkNonlinear.ENERGY_MU] = energy_mu_nonlinear
+        self.report[Stage.OFFLINE][
+            TreewalkNonlinear.BASIS_FINAL
+        ] = basis_nonlinear.shape[1]
+
+        self.basis_nonlinear = basis_nonlinear
 
         assert (
             self.N != 0
@@ -538,6 +584,7 @@ class RomConstructor(Reductor):
         -------
         MN : np.array
         """
+
         if self.mdeim_Mh:
             MN = self.mdeim_Mh.interpolate(mu=mu, t=t, which=self.ROM)
         else:
@@ -853,7 +900,7 @@ class RomConstructorNonlinear(RomConstructorMoving):
         else:
             u_star = 2.0 * uh - uh_n1
 
-        NN_mat = self.assemble_nonlinear(mu=mu, t=t, uh=u_star)
+        NN_mat = self.assemble_trilinear(mu=mu, t=t, uh=u_star)
         NhatN_mat = self.assemble_nonlinear_lifting(mu=mu, t=t)
 
         dt = self.fom.dt
@@ -881,7 +928,7 @@ class RomConstructorNonlinear(RomConstructorMoving):
         bN_vec = bdf + dt * fgN_vec
         return bN_vec
 
-    def assemble_nonlinear(self, mu, t, uh):
+    def assemble_trilinear(self, mu, t, uh):
         """Assemble nonlinear convection operator.
 
         Parameters
@@ -899,7 +946,7 @@ class RomConstructorNonlinear(RomConstructorMoving):
             NN = self.mdeim_Nh.interpolate(mu=mu, t=t, u_n=uh, which=self.ROM)
         else:
             # Assemble FOM operator
-            Nh = self.fom.assemble_nonlinear(mu=mu, t=t, u_n=uh)
+            Nh = self.fom.assemble_trilinear(mu=mu, t=t, u_n=uh)
             NN = self.to_rom(Nh)
 
         return NN
