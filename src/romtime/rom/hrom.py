@@ -487,6 +487,11 @@ class HyperReducedOrderModelFixed:
             idx_mu = rom.solve(mu=mu, step=which)
             srom.solve(mu=mu, step=which)
 
+            name_rom_solutions = f"solutions_rom_{rom.N}_{which}_{idx_mu}"
+            name_srom_solutions = f"solutions_srom_{srom.N}_{which}_{idx_mu}"
+            rom.solutions.to_pickle(name_rom_solutions)
+            srom.solutions.to_pickle(name_srom_solutions)
+
             # -----------------------------------------------------------------
             # Compare against FOM
             if which == Stage.VALIDATION:

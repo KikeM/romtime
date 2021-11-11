@@ -221,6 +221,18 @@ def time_average(ts, func):
     return I
 
 
+def singular_to_pod_error(sigmas):
+
+    # Compute system energy
+    eigenvalues = np.power(sigmas, 2)
+    total = np.sum(eigenvalues)
+    pod_error = total - np.cumsum(eigenvalues)
+
+    pod_error = np.sqrt(pod_error)
+
+    return pod_error
+
+
 def singular_to_energy(sigmas):
 
     # Compute system energy
