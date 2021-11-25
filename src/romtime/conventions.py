@@ -51,6 +51,7 @@ class OperatorType(ProblemType):
     FORCING = "forcing"
     LIFTING = "lifting"
     MASS = "mass"
+    TRILINEAR = "trilinear"
     NONLINEAR = "nonlinear"
     NONLINEAR_LIFTING = "nonlinear-lifting"
     REDUCED_BASIS = "reduced-basis"
@@ -67,6 +68,17 @@ class Treewalk:
     ENERGY_TIME = "energy-time"
     SPECTRUM_MU = "spectrum-mu"
     SPECTRUM_TIME = "spectrum-time"
+
+
+class TreewalkNonlinear:
+
+    BASIS_AFTER_WALK = "N-basis-shape-after-tree-walk"
+    BASIS_FINAL = "N-basis-shape-final"
+    BASIS_TIME = "N-basis-shape-time"
+    ENERGY_MU = "N-energy-mu"
+    ENERGY_TIME = "N-energy-time"
+    SPECTRUM_MU = "N-spectrum-mu"
+    SPECTRUM_TIME = "N-spectrum-time"
 
 
 class EmpiricalInterpolation:
@@ -110,6 +122,9 @@ class RomParameters:
     # S-ROM definition
     SROM_TRUNCATE = "srom_truncate"  # How many modes to remove
     SROM_KEEP = "srom_num"  # How many modes to keep
+
+    # MDEIM Truncation
+    NMDEIM_SIZE = "mdeim_truncate"
 
     # Offline phase
     NUM_BASIS = "num_phi"

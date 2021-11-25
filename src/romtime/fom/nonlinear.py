@@ -4,11 +4,13 @@ import fenics
 import numpy as np
 import pandas as pd
 from romtime.conventions import MassConservation, PistonParameters, ProblemType
-from romtime.utils import array_to_function, dump_csv
+from romtime.utils import array_to_function, bilinear_to_csr, dump_csv, eliminate_zeros
 from scipy.signal import find_peaks
 
 from .base import OneDimensionalSolver, move_mesh
 from .utils import compute_time_between_peaks, find_first_positive_peak
+
+from collections import defaultdict
 
 
 class OneDimensionalBurgersConventions:
@@ -65,7 +67,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         self.probe_location = probe_locations
         self.probes = None
 
-        #  Derived results
+        # Derived results
         self.mc = None  # Mass conservation in time
         self.outflow = None
 
@@ -171,6 +173,8 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
     def setup(self):
         super().setup()
+
+        self.nonlinear_snapshots = list()
 
         self.probe_location = [0.0, 0.5]
 
@@ -332,11 +336,17 @@ class OneDimensionalBurgers(OneDimensionalSolver):
             u_star = fenics.Function(self.V)
             u_star.assign(2.0 * u_n - u_n1)
 
-        Ch_mat = self.assemble_nonlinear(mu=mu, t=t, u_n=u_star)
+        Ch_mat = self.assemble_trilinear(mu=mu, t=t, u_n=u_star)
 
         dt = self.dt
 
         Kh_mat = bdf * Mh_mat + dt * (Ah_mat + Bh_mat + Ch_mat + Chat_mat)
+
+        #  Collect snapshots for later
+        Ch_mat = bilinear_to_csr(matrix=Ch_mat)
+        Ch_mat = eliminate_zeros(Ah=Ch_mat)
+
+        self.nonlinear_snapshots.append(Ch_mat.data)
 
         return Mh_mat, Kh_mat
 
@@ -386,7 +396,7 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         return Ah_mat
 
     @move_mesh
-    def assemble_nonlinear(self, mu, t, entries=None, u_n=None):
+    def assemble_trilinear(self, mu, t, entries=None, u_n=None):
 
         # ---------------------------------------------------------------------
         # Weak Formulation
@@ -398,6 +408,30 @@ class OneDimensionalBurgers(OneDimensionalSolver):
 
         b0 = self.nonlinear_coefficient(mu)
         Ch = b0 * u_n * u.dx(0) * v * dx
+
+        if entries:
+            Ch_mat = self.assemble_local(form=Ch, entries=entries)
+        else:
+            bc = self.define_homogeneous_dirichlet_bc()
+            Ch_mat = self.assemble_operator(Ch, bc)
+
+        return Ch_mat
+
+    @move_mesh
+    def assemble_nonlinear(self, mu, t, entries=None, u_n=None):
+
+        # ---------------------------------------------------------------------
+        # Weak Formulation
+        # ---------------------------------------------------------------------
+        u, v, dx = self.u, self.v, fenics.dx
+
+        if isinstance(u_n, (np.ndarray)):
+            u_n = array_to_function(u_n, self.V)
+
+        x = fenics.SpatialCoordinate(self.mesh)
+
+        b0 = self.nonlinear_coefficient(mu)
+        Ch = b0 * u_n * fenics.cos(x[0] + 1) * u.dx(0) * v * dx
 
         if entries:
             Ch_mat = self.assemble_local(form=Ch, entries=entries)

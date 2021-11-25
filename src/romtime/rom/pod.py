@@ -4,7 +4,7 @@ from scipy.linalg import svd
 DROP_TOLERANCE = 1e-7
 
 
-def orth(snapshots, num=None, tol=None, normalize=True):
+def orth(snapshots, num=None, tol=None, normalize=True, return_VT=False):
     """Compute orthogonalization via SVD.
 
     Parameters
@@ -35,7 +35,7 @@ def orth(snapshots, num=None, tol=None, normalize=True):
         _snapshots = snapshots
 
     # SVD compression
-    u, s, _ = svd(_snapshots, full_matrices=False, lapack_driver="gesvd")
+    u, s, vt = svd(_snapshots, full_matrices=False, lapack_driver="gesvd")
 
     # Compute system energy
     eigenvalues = np.power(s, 2)
@@ -46,11 +46,17 @@ def orth(snapshots, num=None, tol=None, normalize=True):
     if tol:
         mask = energy < tol
         Q = u[:, mask]
+        VT = vt[mask, :]
     # Number of elements to retain
     elif num:
         Q = u[:, :num]
+        VT = vt[:num, :]
     # Clean noisy basis vectors
     else:
         Q = u[:, s > DROP_TOLERANCE]
+        VT = vt[s > DROP_TOLERANCE, :]
 
-    return Q, s, energy
+    if return_VT:
+        return Q, s, energy, VT
+    else:
+        return Q, s, energy
