@@ -5,6 +5,7 @@ from pprint import pprint
 import fenics
 import numpy as np
 from dolfin.cpp.la import Matrix, Vector
+from more_itertools import stagger
 from romtime.base import RomSolutionsStorage
 from romtime.conventions import (
     BDF,
@@ -781,7 +782,7 @@ class RomConstructorNonlinear(RomConstructorMoving):
 
         samples = []
         domains = [
-            (start, end) for start, end in zip(piston_mach_space, piston_mach_space[1:])
+            (start, end) for start, end in stagger(piston_mach_space, offsets=(0, 1))
         ]
         for sample in sampler:
 

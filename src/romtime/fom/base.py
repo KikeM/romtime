@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from copy import deepcopy
 from functools import wraps
 from itertools import product
 
@@ -9,7 +10,12 @@ import numpy as np
 from adjustText import adjust_text
 from romtime.base import SolutionsStorage
 from romtime.conventions import BDF, Domain, FIG_KWARGS
-from romtime.utils import bilinear_to_csr, eliminate_zeros, function_to_array
+from romtime.utils import (
+    bilinear_to_csr,
+    eliminate_zeros,
+    function_to_array,
+    gaussian_bell,
+)
 from scipy.sparse import find as get_nonzero_entries
 from tqdm import tqdm
 
@@ -107,6 +113,7 @@ class OneDimensionalSolver(ABC):
         self.dof_to_cells = None
         self.entries_dirichlet = None
         self.dofs_dirichlet = None
+        self.ale_x = None
 
         # Snapshots Collection
         self.solutions = None  # SolutionsStorage
@@ -138,6 +145,7 @@ class OneDimensionalSolver(ABC):
         del self.dof_to_cells
         del self.entries_dirichlet
         del self.dofs_dirichlet
+        del self.ale_x
         # Snapshots Collection
         del self.solutions
         del self.is_setup
@@ -219,7 +227,7 @@ class OneDimensionalSolver(ABC):
 
         self.dof_to_cells = dof_to_cells
 
-    def _move_mesh(self, scale=None, back=False):
+    def _move_mesh(self, displacement=None, back=False):
         """Move mesh according to scale factor.
 
         Parameters
@@ -230,29 +238,19 @@ class OneDimensionalSolver(ABC):
             Rescale the mesh back to the original size, by default False
         """
 
-        def F(y, params):
-
-            mu = params.get("mu")
-            sigma = params.get("sigma")
-            p = params.get("p")
-
-            nonlinear = p * np.exp(-(((y - mu) / sigma) ** 2.0))
-            return nonlinear
-
-        params = {"mu": 0.5, "sigma": 0.10, "p": 1.75}
-
-        X = self.mesh.coordinates()
-
+        # ---------------------------------------------------------------------
+        # Remove displacement
         if back == True:
 
             displacement = self._scale
+
             # X = x - displacement
             for idx, x in enumerate(self.mesh.coordinates()):
                 x[0] -= displacement[idx]
 
+        # ---------------------------------------------------------------------
+        # Apply displacement
         elif back == False:
-            distortion = F(X, params)
-            displacement = X * (1 + distortion) * (scale - 1)
 
             self._scale = np.copy(displacement)
 
@@ -261,22 +259,34 @@ class OneDimensionalSolver(ABC):
                 x[0] += displacement[idx]
 
     def move_mesh(self, mu=None, t=None, back=False):
-        """Move mesh according to Lt(mu, t).
+        """Move mesh according to displacement field.
 
         Parameters
         ----------
-        mu : dict, optional if back is True
-        t : float, optional if back is True
+        mu : dict, optional if `back` is True
+        t : float, optional if `back` is True
         back : bool, optional
             Rescale the mesh back to the original size, by default False
         """
 
-        # If we need to move the mesh back
+        # -----------------------------------------------------------------
+        # Move mesh back to reference domain
         if back == True:
             return self._move_mesh(back=back)
 
+        # -----------------------------------------------------------------
+        # Compute displacement
+        X = self.mesh.coordinates()  # Reference domain
+        distortion = gaussian_bell(X, **mu)
+
+        # Time scaling
         L_t = self.Lt(t=t, **mu)
-        self._move_mesh(scale=L_t)
+
+        displacement = X * (1.0 + distortion) * (L_t - 1.0)
+
+        # -----------------------------------------------------------------
+        # Execute mesh movement
+        self._move_mesh(displacement=displacement)
 
     def runtime_process(self, u):
         pass
@@ -305,6 +315,7 @@ class OneDimensionalSolver(ABC):
         self.dofmap = dofmap
         self.u = u
         self.v = v
+        self.ale_x = deepcopy(mesh.coordinates())
 
         # Create mappings for (M)DEIM
         self.build_cell_to_dofs()

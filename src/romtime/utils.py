@@ -169,6 +169,30 @@ def eliminate_zeros(Ah):
 
 
 # -----------------------------------------------------------------------------
+# Mesh distortion
+def gaussian_bell(y, loc, sigma, scale, **kwargs):
+    """Gaussian bell.
+
+    Parameters
+    ----------
+    y : np.array
+        Node locations in the fixed mesh.
+    loc : float
+        Bell center.
+    sigma : float
+        Bell span.
+    scale : float
+        Multiplicative scaling function.
+
+    Returns
+    -------
+    nonlinear : np.array
+    """
+    nonlinear = scale * np.exp(-(((y - loc) / sigma) ** 2.0))
+    return nonlinear
+
+
+# -----------------------------------------------------------------------------
 # Certification
 def compute_rom_difference(uN, uN_srom, V_srom):
     """Compute L2 error between ROM and S-ROM.

@@ -146,6 +146,11 @@ class ProbeLocations:
 
 class PistonParameters:
 
+    # Mesh distortion
+    LOC = "loc"
+    SIGMA = "sigma"
+    SCALE = "scale"
+
     ALPHA = "alpha"
     DELTA = "delta"
     GAMMA = "gamma"

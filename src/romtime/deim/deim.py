@@ -1,4 +1,5 @@
 from copy import deepcopy
+from pprint import pprint
 import matplotlib.pyplot as plt
 import numpy as np
 from romtime.conventions import (
@@ -213,6 +214,24 @@ class DiscreteEmpiricalInterpolation(Reductor):
 
         # Clean-up
         del P
+
+        # ---------------------------------------------------------------------
+        # Print reports
+        keys_wanted = [
+            Treewalk.BASIS_TIME,
+            Treewalk.BASIS_AFTER_WALK,
+            Treewalk.BASIS_FINAL,
+        ]
+
+        printed = dict(
+            (key, self.report[Stage.OFFLINE][key])
+            for key in keys_wanted
+            if key in self.report[Stage.OFFLINE]
+        )
+
+        print(f"For {self.name}")
+        pprint(printed)
+        print()
 
     def store_dofs(self, dofs):
         """Store vector entries.

@@ -4,7 +4,13 @@ import fenics
 import numpy as np
 import pandas as pd
 from romtime.conventions import MassConservation, PistonParameters, ProblemType
-from romtime.utils import array_to_function, bilinear_to_csr, dump_csv, eliminate_zeros
+from romtime.utils import (
+    array_to_function,
+    bilinear_to_csr,
+    dump_csv,
+    eliminate_zeros,
+    gaussian_bell,
+)
 from scipy.signal import find_peaks
 
 from .base import OneDimensionalSolver, move_mesh
@@ -287,15 +293,27 @@ class OneDimensionalBurgers(OneDimensionalSolver):
         w : fenics.Expression
         """
         dLt_dt = self.dLt_dt(t=t, **mu)
-        Lt = self.Lt(t=t, **mu)
+        X = self.ale_x
+        F = gaussian_bell(X, **mu)
 
-        w = fenics.Expression(
-            "x[0] * dLt_dt / Lt",
-            degree=2,
-            dLt_dt=dLt_dt,
-            Lt=Lt,
-            **mu,
-        )
+        mesh_velocity = X * dLt_dt * (1.0 + F)
+        mesh_velocity = np.flip(mesh_velocity)
+
+        w = array_to_function(mesh_velocity, V=self.V)
+
+        # ---------------------------------------------------------------------
+        # Useful for debugging
+        # Lt = self.Lt(t=t, **mu)
+        # _w = fenics.Expression(
+        #     "x[0] * dLt_dt / Lt",
+        #     degree=2,
+        #     dLt_dt=dLt_dt,
+        #     Lt=Lt,
+        #     **mu,
+        # )
+        # _vertex = _w.compute_vertex_values(self.mesh)
+        # vertex = w.compute_vertex_values(self.mesh)
+        # ---------------------------------------------------------------------
 
         return w
 
