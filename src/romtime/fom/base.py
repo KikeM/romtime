@@ -230,11 +230,35 @@ class OneDimensionalSolver(ABC):
             Rescale the mesh back to the original size, by default False
         """
 
+        def F(y, params):
+
+            mu = params.get("mu")
+            sigma = params.get("sigma")
+            p = params.get("p")
+
+            nonlinear = p * np.exp(-(((y - mu) / sigma) ** 2.0))
+            return nonlinear
+
+        params = {"mu": 0.5, "sigma": 0.10, "p": 1.75}
+
+        X = self.mesh.coordinates()
+
         if back == True:
-            self.mesh.scale(1.0 / self._scale)
+
+            displacement = self._scale
+            # X = x - displacement
+            for idx, x in enumerate(self.mesh.coordinates()):
+                x[0] -= displacement[idx]
+
         elif back == False:
-            self.mesh.scale(scale)
-            self._scale = scale
+            distortion = F(X, params)
+            displacement = X * (1 + distortion) * (scale - 1)
+
+            self._scale = np.copy(displacement)
+
+            # x = X + displacement
+            for idx, x in enumerate(self.mesh.coordinates()):
+                x[0] += displacement[idx]
 
     def move_mesh(self, mu=None, t=None, back=False):
         """Move mesh according to Lt(mu, t).
