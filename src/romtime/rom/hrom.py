@@ -693,9 +693,10 @@ class HyperReducedOrderModelFixed:
         # ---------------------------------------------------------------------
         # ROM summary
         rom = self.rom
-        BASIS_WALK = rom.BASIS_AFTER_WALK
-        BASIS_FINAL = rom.BASIS_FINAL
-        SPECTRUM_MU = rom.SPECTRUM_MU
+        BASIS_WALK = Treewalk.BASIS_AFTER_WALK
+        BASIS_FINAL = Treewalk.BASIS_FINAL
+        SPECTRUM_MU = Treewalk.SPECTRUM_MU
+        SPECTRUM_TIME = Treewalk.SPECTRUM_TIME
         ENERGY_MU = rom.ENERGY_MU
 
         report = rom.report[OFFLINE]
@@ -703,6 +704,7 @@ class HyperReducedOrderModelFixed:
         summary_basis[REDUCED_BASIS][BASIS_WALK] = report[BASIS_WALK]
         summary_basis[REDUCED_BASIS][BASIS_FINAL] = report[BASIS_FINAL]
         summary_sig[REDUCED_BASIS][SPECTRUM_MU] = report[SPECTRUM_MU]
+        summary_sig[REDUCED_BASIS][SPECTRUM_TIME] = report[SPECTRUM_TIME]
         summary_energy[REDUCED_BASIS][ENERGY_MU] = report[ENERGY_MU]
 
         # ---------------------------------------------------------------------
@@ -711,7 +713,6 @@ class HyperReducedOrderModelFixed:
         N_BASIS_FINAL = TreewalkNonlinear.BASIS_FINAL
         N_SPECTRUM_MU = TreewalkNonlinear.SPECTRUM_MU
         N_SPECTRUM_TIME = TreewalkNonlinear.SPECTRUM_TIME
-        SPECTRUM_TIME = Treewalk.SPECTRUM_TIME
         N_ENERGY_MU = TreewalkNonlinear.ENERGY_MU
 
         report = rom.report[OFFLINE]
