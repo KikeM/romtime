@@ -710,6 +710,8 @@ class HyperReducedOrderModelFixed:
         N_BASIS_WALK = TreewalkNonlinear.BASIS_AFTER_WALK
         N_BASIS_FINAL = TreewalkNonlinear.BASIS_FINAL
         N_SPECTRUM_MU = TreewalkNonlinear.SPECTRUM_MU
+        N_SPECTRUM_TIME = TreewalkNonlinear.SPECTRUM_TIME
+        SPECTRUM_TIME = Treewalk.SPECTRUM_TIME
         N_ENERGY_MU = TreewalkNonlinear.ENERGY_MU
 
         report = rom.report[OFFLINE]
@@ -717,7 +719,10 @@ class HyperReducedOrderModelFixed:
         summary_basis[TRILINEAR][BASIS_WALK] = report[N_BASIS_WALK]
         summary_basis[TRILINEAR][BASIS_FINAL] = report[N_BASIS_FINAL]
         summary_sig[TRILINEAR][SPECTRUM_MU] = report[N_SPECTRUM_MU]
+        summary_sig[TRILINEAR][SPECTRUM_TIME] = report[N_SPECTRUM_TIME]
         summary_energy[TRILINEAR][ENERGY_MU] = report[N_ENERGY_MU]
+        mu_space_deim[TRILINEAR] = self.mdeim_trilinear.mu_space
+        summary_errors_deim[TRILINEAR] = self.mdeim_trilinear.errors_rom.copy()
 
         # ---------------------------------------------------------------------
         # Algebraic operators summary
@@ -779,6 +784,7 @@ class HyperReducedOrderModelFixed:
         BASIS_WALK = Treewalk.BASIS_AFTER_WALK
         BASIS_FINAL = Treewalk.BASIS_FINAL
         SPECTRUM_MU = Treewalk.SPECTRUM_MU
+        SPECTRUM_TIME = Treewalk.SPECTRUM_TIME
         ENERGY_MU = Treewalk.ENERGY_MU
         OFFLINE = Stage.OFFLINE
         NAME = operator.name
@@ -788,6 +794,7 @@ class HyperReducedOrderModelFixed:
         basis[NAME][BASIS_WALK] = report[BASIS_WALK]
         basis[NAME][BASIS_FINAL] = report[BASIS_FINAL]
         sigma[NAME][SPECTRUM_MU] = report[SPECTRUM_MU]
+        sigma[NAME][SPECTRUM_TIME] = report[SPECTRUM_TIME]
         energy[NAME][ENERGY_MU] = report[ENERGY_MU]
 
         errors_deim[NAME] = operator.errors_rom.copy()
@@ -807,6 +814,29 @@ class HyperReducedOrderModelFixed:
         timesteps = params["ts"]
 
         object.evaluate(ts=timesteps, num=n_online, mu_space=mu_space)
+
+    def evaluate_nmdeim_model(
+        self,
+        object: MatrixDiscreteEmpiricalInterpolationNonlinear,
+        mu_space=None,
+        funcs=None,
+    ):
+        """Evaluate N-MDEIM model.
+
+        Parameters
+        ----------
+        object : MatrixDiscreteEmpiricalInterpolationNonlinear-like
+        mu_space : dict
+        """
+        params = object.tree_walk_params
+
+        n_online = params.get(RomParameters.NUM_ONLINE, None)
+        timesteps = params["ts"]
+        num_psi = params[RomParameters.NUM_PSI_NMDEIM]
+
+        funcs = self.basis[:, :num_psi]
+
+        object.evaluate(ts=timesteps, funcs=funcs, num=n_online, mu_space=mu_space)
 
     def _run_deim(
         self,
@@ -830,19 +860,30 @@ class HyperReducedOrderModelFixed:
         evaluate : bool, optional
             Whether to run online evaluation stage, by default False
         """
-
-        # Build collateral basis
-        object.run(mu_space=mu_space)
-        object.dump_fom_basis()
-
         if is_mdeim:
             params = self.mdeim_params
         else:
             params = self.deim_params
 
+        if mu_space is None:
+            mu_space_offline = self.rom.build_sampling_space(
+                num=params[RomParameters.NUM_SNAPSHOTS],
+                rnd=params[RomParameters.RND],
+            )
+        else:
+            mu_space_offline = mu_space
+
+        # Build collateral basis
+        object.run(mu_space=mu_space_offline)
+        object.dump_fom_basis()
+
         # Online evaluation
         if evaluate:
-            self.evaluate_deim_model(object=object, mu_space=mu_space)
+            mu_space_online = self.rom.build_sampling_space(
+                num=params[RomParameters.NUM_ONLINE],
+                rnd=params[RomParameters.RND_ONLINE],
+            )
+            self.evaluate_deim_model(object=object, mu_space=mu_space_online)
 
         # Include the reduction for the algebraic operators
         for rom in [self.rom, self.srom]:
@@ -1166,17 +1207,40 @@ class HyperReducedPiston(HyperReducedOrderModelFixed):
             By default False.
         """
 
+        params = self.mdeim_nonlinear_params
+
+        # ---------------------------------------------------------------------
+        # Build collateral basis
+        # (A) Assembling operator with the reduced basis elements
         if basis is None:
-            # Build collateral basis
-            object.run(u_n=u_n, mu_space=mu_space)
+
+            # Create sampling space
+            if mu_space is None:
+                mu_space_offline = self.rom.build_sampling_space(
+                    num=params[RomParameters.NUM_SNAPSHOTS],
+                    rnd=params[RomParameters.RND],
+                )
+            else:
+                mu_space_offline = mu_space
+
+            # Running offline stage
+            object.run(u_n=u_n, mu_space=mu_space_offline)
             object.dump_fom_basis()
 
-            # Online evaluation
-            if evaluate:
-                self.evaluate_deim_model(object=object, mu_space=mu_space)
+        # (B) Using the snapshots from the FOM model
         else:
             object.load_fom_basis(basis=basis)
 
+        # ---------------------------------------------------------------------
+        # Online evaluation
+        if evaluate:
+            mu_space_online = self.rom.build_sampling_space(
+                num=params[RomParameters.NUM_ONLINE],
+                rnd=params[RomParameters.RND_ONLINE],
+            )
+            self.evaluate_nmdeim_model(object=object, mu_space=mu_space_online)
+
+        # ---------------------------------------------------------------------
         # Include the reduction for the algebraic operators
         for rom in [self.rom, self.srom]:
             rom.add_hyper_reductor(reductor=object, which=which)

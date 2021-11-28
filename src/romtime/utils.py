@@ -192,6 +192,46 @@ def gaussian_bell(y, loc, sigma, scale, **kwargs):
     return nonlinear
 
 
+def compute_displacement(mu, t, X, Lt):
+    """Compute mesh displacement.
+
+    Parameters
+    ----------
+    mu : dict
+    t : float
+    X : np.array
+        Reference domain
+    Lt : function
+
+    Returns
+    -------
+    displacement : np.array
+    is_feasible : bool
+    """
+    distortion = gaussian_bell(X, **mu)
+
+    # Time scaling
+    L_t = Lt(t=t, **mu)
+
+    displacement = X * (1.0 + distortion) * (L_t - 1.0)
+
+    # -------------------------------------------------------------------------
+    # Check feasibility
+    x = X + displacement
+    x = np.ravel(x)
+    delta_x = np.diff(x)
+
+    all_positive = np.all(delta_x > 0.0)
+
+    MIN_DX = 1e-6
+    min_mesh = np.min(delta_x) >= MIN_DX
+    min_mesh = np.all(min_mesh)
+
+    is_feasible = all_positive & min_mesh
+
+    return displacement, is_feasible
+
+
 # -----------------------------------------------------------------------------
 # Certification
 def compute_rom_difference(uN, uN_srom, V_srom):

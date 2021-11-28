@@ -116,8 +116,12 @@ class Domain:
 
 class RomParameters:
 
+    RND = "rnd"
+    RND_ONLINE = "rnd_online"
+
     # Online phase
     NUM_ONLINE = "num_online"
+    NUM_PSI_NMDEIM = "number-rb-elements"
 
     # S-ROM definition
     SROM_TRUNCATE = "srom_truncate"  # How many modes to remove

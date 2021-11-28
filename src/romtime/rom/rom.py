@@ -21,6 +21,7 @@ from romtime.fom.nonlinear import OneDimensionalBurgers
 from romtime.utils import (
     array_to_function,
     bilinear_to_csr,
+    compute_displacement,
     function_to_array,
     functional_to_array,
     project_csr,
@@ -336,9 +337,10 @@ class RomConstructor(Reductor):
             _basis, sigmas_time, energy_time = orth(fom.solutions.snapshots, tol=tol_t)
             basis_time.append(_basis)
 
-            self.report[Stage.OFFLINE][Treewalk.SPECTRUM_TIME][mu_idx] = sigmas_time
-            self.report[Stage.OFFLINE][Treewalk.ENERGY_TIME][mu_idx] = energy_time
-            self.report[Stage.OFFLINE][Treewalk.BASIS_TIME][mu_idx] = _basis.shape[1]
+            OFFLINE = Stage.OFFLINE
+            self.report[OFFLINE][Treewalk.SPECTRUM_TIME][mu_idx] = sigmas_time
+            self.report[OFFLINE][Treewalk.ENERGY_TIME][mu_idx] = energy_time
+            self.report[OFFLINE][Treewalk.BASIS_TIME][mu_idx] = _basis.shape[1]
 
             # -----------------------------------------------------------------
             # SVD - Nonlinear term
@@ -352,15 +354,13 @@ class RomConstructor(Reductor):
             )
             basis_nonlinear.append(_basis_nonlinear)
 
-            self.report[Stage.OFFLINE][TreewalkNonlinear.SPECTRUM_TIME][
+            self.report[OFFLINE][TreewalkNonlinear.SPECTRUM_TIME][
                 mu_idx
             ] = _sigmas_nonlinear
-            self.report[Stage.OFFLINE][TreewalkNonlinear.ENERGY_TIME][
+            self.report[OFFLINE][TreewalkNonlinear.ENERGY_TIME][
                 mu_idx
             ] = _energy_nonlinear
-            self.report[Stage.OFFLINE][TreewalkNonlinear.BASIS_TIME][
-                mu_idx
-            ] = _basis.shape[1]
+            self.report[OFFLINE][TreewalkNonlinear.BASIS_TIME][mu_idx] = _basis.shape[1]
 
             if fom.RUNTIME_PROCESS:
                 name_probes = f"probes_offline_fom_{mu_idx}.csv"
@@ -369,8 +369,8 @@ class RomConstructor(Reductor):
         basis = np.hstack(basis_time)
         basis_nonlinear = np.hstack(basis_nonlinear)
 
-        self.report[Stage.OFFLINE][Treewalk.BASIS_AFTER_WALK] = basis.shape[1]
-        self.report[Stage.OFFLINE][
+        self.report[OFFLINE][Treewalk.BASIS_AFTER_WALK] = basis.shape[1]
+        self.report[OFFLINE][
             TreewalkNonlinear.BASIS_AFTER_WALK
         ] = basis_nonlinear.shape[1]
 
@@ -384,9 +384,9 @@ class RomConstructor(Reductor):
             normalize=False,
         )
 
-        self.report[Stage.OFFLINE][Treewalk.SPECTRUM_MU] = sigmas_mu
-        self.report[Stage.OFFLINE][Treewalk.ENERGY_MU] = energy_mu
-        self.report[Stage.OFFLINE][Treewalk.BASIS_FINAL] = basis.shape[1]
+        self.report[OFFLINE][Treewalk.SPECTRUM_MU] = sigmas_mu
+        self.report[OFFLINE][Treewalk.ENERGY_MU] = energy_mu
+        self.report[OFFLINE][Treewalk.BASIS_FINAL] = basis.shape[1]
 
         self.basis = basis
 
@@ -398,11 +398,9 @@ class RomConstructor(Reductor):
             normalize=False,
         )
 
-        self.report[Stage.OFFLINE][TreewalkNonlinear.SPECTRUM_MU] = sigmas_mu_nonlinear
-        self.report[Stage.OFFLINE][TreewalkNonlinear.ENERGY_MU] = energy_mu_nonlinear
-        self.report[Stage.OFFLINE][
-            TreewalkNonlinear.BASIS_FINAL
-        ] = basis_nonlinear.shape[1]
+        self.report[OFFLINE][TreewalkNonlinear.SPECTRUM_MU] = sigmas_mu_nonlinear
+        self.report[OFFLINE][TreewalkNonlinear.ENERGY_MU] = energy_mu_nonlinear
+        self.report[OFFLINE][TreewalkNonlinear.BASIS_FINAL] = basis_nonlinear.shape[1]
 
         self.basis_nonlinear = basis_nonlinear
 
@@ -777,16 +775,37 @@ class RomConstructorNonlinear(RomConstructorMoving):
 
         # This needs to be a high number because we need to sample
         # many times until we find a parametrization that fits
-        _num = int(2e4)
+        _num = int(2e5)
         sampler = super().build_sampling_space(rnd=rnd, num=_num)
 
+        fom = self.fom
+        domain = fom.domain
+        L0 = fom.L
+        T = domain[fom.T]
+        NX = domain[fom.NX]
+        NT = domain[fom.NT]
+        X = np.linspace(0.0, L0, NX)
+        ts = np.linspace(0.0, T, NT)
+        Lt = fom.Lt
+
+        boundaries = stagger(piston_mach_space, offsets=(0, 1))
+        domains = [(start, end) for start, end in boundaries]
         samples = []
-        domains = [
-            (start, end) for start, end in stagger(piston_mach_space, offsets=(0, 1))
-        ]
         for sample in sampler:
 
             piston_mach = self.compute_piston_mach_number(sample)
+
+            # ---------------------------------------------------------------------------
+            # Check mesh feasibility
+            is_feasible = True
+            for t in ts:
+
+                _, is_feasible_t = compute_displacement(mu=sample, t=t, X=X, Lt=Lt)
+
+                is_feasible = is_feasible & is_feasible_t
+
+            if is_feasible == False:
+                continue
 
             remove = None
             for domain in domains:
@@ -812,6 +831,8 @@ class RomConstructorNonlinear(RomConstructorMoving):
 
         # Add sorting so the idx makes sense
         samples = sorted(samples, key=lambda x: x[PistonParameters.MACH_PISTON])
+
+        assert len(samples) == num, "Not enough samples were collected."
 
         return samples
 

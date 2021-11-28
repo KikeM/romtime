@@ -12,9 +12,9 @@ from romtime.base import SolutionsStorage
 from romtime.conventions import BDF, Domain, FIG_KWARGS
 from romtime.utils import (
     bilinear_to_csr,
+    compute_displacement,
     eliminate_zeros,
     function_to_array,
-    gaussian_bell,
 )
 from scipy.sparse import find as get_nonzero_entries
 from tqdm import tqdm
@@ -277,12 +277,8 @@ class OneDimensionalSolver(ABC):
         # -----------------------------------------------------------------
         # Compute displacement
         X = self.mesh.coordinates()  # Reference domain
-        distortion = gaussian_bell(X, **mu)
 
-        # Time scaling
-        L_t = self.Lt(t=t, **mu)
-
-        displacement = X * (1.0 + distortion) * (L_t - 1.0)
+        displacement, _ = compute_displacement(mu, t, X, Lt=self.Lt)
 
         # -----------------------------------------------------------------
         # Execute mesh movement
