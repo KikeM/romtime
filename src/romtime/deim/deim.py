@@ -132,7 +132,15 @@ class DiscreteEmpiricalInterpolation(Reductor):
         return new
 
     def load_fom_basis(self, keep=None, basis=None):
-        """Load FOM collateral basis and build interpolation mesh with it."""
+        """Load FOM collateral basis and build interpolation mesh with it.
+
+        Parameters
+        ----------
+        keep : int or float, optional
+            Number of modes to keep from the basis, by default None
+        basis : np.array, optional
+            External basis to load into the reductor, by default None
+        """
 
         print()
         print("------------------------------------------")
@@ -146,7 +154,17 @@ class DiscreteEmpiricalInterpolation(Reductor):
         print(f"Basis size is {basis.shape}")
 
         if keep:
+
+            # Allow original base size percentage
+            if keep <= 1.0:
+                N = basis.shape[1]
+                keep = np.floor(N * keep)
+                keep = int(keep)
+                if keep < 1:
+                    keep = 1
+
             print(f"Keeping {keep} elements.")
+
             basis = basis[:, :keep]
 
         self.basis_fom = basis

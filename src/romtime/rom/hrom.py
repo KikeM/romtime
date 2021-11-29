@@ -341,7 +341,7 @@ class HyperReducedOrderModelFixed:
         print(f"(ROM) N = {rom.N}")
         print(f"(SROM) N = {srom.N}")
 
-    def start_from_existing_basis(self):
+    def start_from_existing_basis(self, deim=True):
 
         # ---------------------------------------------------------------------
         # For validation tests
@@ -381,40 +381,41 @@ class HyperReducedOrderModelFixed:
 
         # ---------------------------------------------------------------------
         # Read DEIM basis
-        self.deim_rhs.load_fom_basis()
-        self.mdeim_mass.load_fom_basis()
-        self.mdeim_stiffness.load_fom_basis()
-        self.mdeim_convection.load_fom_basis()
-        self.mdeim_trilinear_lifting.load_fom_basis()
+        if deim:
+            self.deim_rhs.load_fom_basis()
+            self.mdeim_mass.load_fom_basis()
+            self.mdeim_stiffness.load_fom_basis()
+            self.mdeim_convection.load_fom_basis()
+            self.mdeim_trilinear_lifting.load_fom_basis()
 
-        N_mdeim_trilinear = self.rom_params[RomParameters.NMDEIM_SIZE]
-        self.mdeim_trilinear.load_fom_basis(keep=N_mdeim_trilinear)
+            N_mdeim_trilinear = self.rom_params[RomParameters.NMDEIM_SIZE]
+            self.mdeim_trilinear.load_fom_basis(keep=N_mdeim_trilinear)
 
-        # ---------------------------------------------------------------------
-        # Connect (M)DEIM with ROM models
-        # Include the reduction for the algebraic operators
+            # ---------------------------------------------------------------------
+            # Connect (M)DEIM with ROM models
+            # Include the reduction for the algebraic operators
 
-        operators = [
-            OperatorType.LIFTING,
-            OperatorType.MASS,
-            OperatorType.STIFFNESS,
-            OperatorType.CONVECTION,
-            OperatorType.NONLINEAR_LIFTING,
-            OperatorType.TRILINEAR,
-        ]
+            operators = [
+                OperatorType.LIFTING,
+                OperatorType.MASS,
+                OperatorType.STIFFNESS,
+                OperatorType.CONVECTION,
+                OperatorType.NONLINEAR_LIFTING,
+                OperatorType.TRILINEAR,
+            ]
 
-        deims = [
-            self.deim_rhs,
-            self.mdeim_mass,
-            self.mdeim_stiffness,
-            self.mdeim_convection,
-            self.mdeim_trilinear_lifting,
-            self.mdeim_trilinear,
-        ]
+            deims = [
+                self.deim_rhs,
+                self.mdeim_mass,
+                self.mdeim_stiffness,
+                self.mdeim_convection,
+                self.mdeim_trilinear_lifting,
+                self.mdeim_trilinear,
+            ]
 
-        for reductor, which in zip(deims, operators):
-            for _rom in [self.rom, self.srom]:
-                _rom.add_hyper_reductor(reductor=reductor, which=which)
+            for reductor, which in zip(deims, operators):
+                for _rom in [self.rom, self.srom]:
+                    _rom.add_hyper_reductor(reductor=reductor, which=which)
 
     def run_offline_hyperreduction(self, mu_space=None, evaluate=True):
         """Generate collateral basis for linear algebraic operators."""
