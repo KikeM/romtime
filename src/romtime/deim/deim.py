@@ -188,7 +188,11 @@ class DiscreteEmpiricalInterpolation(Reductor):
         if self.basis_fom is None:
             assert f"Trying to dump basis for {self.name} without building it!"
         else:
-            filename = self.basis_pickle_name
+            if path is None:
+                filename = self.basis_pickle_name
+            else:
+                filename = path
+
             dump_pickle(filename, obj=self.basis_fom)
 
     def run(self, normalize=True, mu_space=None):

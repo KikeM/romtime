@@ -738,7 +738,7 @@ class RomConstructorMoving(RomConstructor):
 class RomConstructorNonlinear(RomConstructorMoving):
 
     # This sets an upper limit for the amount of forcing in the system
-    PISTON_MACH_MIN = 0.15
+    PISTON_MACH_MIN = 0.30
     PISTON_MACH_MAX = 0.4
 
     def __init__(self, fom: OneDimensionalBurgers, grid: dict, name=None) -> None:

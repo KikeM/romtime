@@ -341,7 +341,7 @@ class HyperReducedOrderModelFixed:
         print(f"(ROM) N = {rom.N}")
         print(f"(SROM) N = {srom.N}")
 
-    def start_from_existing_basis(self, deim=True):
+    def start_from_existing_basis(self, deim=True, size=dict()):
 
         # ---------------------------------------------------------------------
         # For validation tests
@@ -382,11 +382,17 @@ class HyperReducedOrderModelFixed:
         # ---------------------------------------------------------------------
         # Read DEIM basis
         if deim:
-            self.deim_rhs.load_fom_basis()
-            self.mdeim_mass.load_fom_basis()
-            self.mdeim_stiffness.load_fom_basis()
-            self.mdeim_convection.load_fom_basis()
-            self.mdeim_trilinear_lifting.load_fom_basis()
+            self.deim_rhs.load_fom_basis(keep=size.get(OperatorType.RHS, None))
+            self.mdeim_mass.load_fom_basis(keep=size.get(OperatorType.MASS, None))
+            self.mdeim_stiffness.load_fom_basis(
+                keep=size.get(OperatorType.STIFFNESS, None)
+            )
+            self.mdeim_convection.load_fom_basis(
+                keep=size.get(OperatorType.CONVECTION, None)
+            )
+            self.mdeim_trilinear_lifting.load_fom_basis(
+                keep=size.get(OperatorType.NONLINEAR_LIFTING, None)
+            )
 
             N_mdeim_trilinear = self.rom_params[RomParameters.NMDEIM_SIZE]
             self.mdeim_trilinear.load_fom_basis(keep=N_mdeim_trilinear)
@@ -502,7 +508,7 @@ class HyperReducedOrderModelFixed:
 
         self.evaluate_deim_model(object=self.mdeim_trilinear, mu_space=mu_space)
 
-    def _evaluate(self, which, mu_space=None):
+    def _evaluate(self, which, estimate_error=True, mu_space=None):
         """(H)ROM evaluation for a set of parameters."""
 
         fom = self.fom
@@ -524,12 +530,9 @@ class HyperReducedOrderModelFixed:
             # -----------------------------------------------------------------
             # Solve ROM
             idx_mu = rom.solve(mu=mu, step=which)
-            srom.solve(mu=mu, step=which)
 
             name_rom_solutions = f"solutions_rom_{rom.N}_{which}_{idx_mu}"
-            name_srom_solutions = f"solutions_srom_{srom.N}_{which}_{idx_mu}"
             rom.solutions.to_pickle(name_rom_solutions)
-            srom.solutions.to_pickle(name_srom_solutions)
 
             # -----------------------------------------------------------------
             # Compare against FOM
@@ -543,36 +546,50 @@ class HyperReducedOrderModelFixed:
                 fom.solve()
                 uh_fom = fom.solutions.fom
 
+            name_fom_solutions = f"solutions_fom_{which}_{idx_mu}"
+            fom.solutions.to_pickle(name_fom_solutions)
+
             # -----------------------------------------------------------------
             # Compute errors
             uh_rom = rom.solutions.fom
-            uh_srom = srom.solutions.fom
 
             nt = uh_fom.shape[1]
             _compute_error = lambda uh: [
                 compute_error(uh_fom[:, idx], uh[:, idx]) for idx in range(nt)
             ]
 
-            errors_rom = _compute_error(uh_rom)
-            errors_srom = _compute_error(uh_srom)
-
             # Convert to array format
+            errors_rom = _compute_error(uh_rom)
             errors_rom = np.array(errors_rom)
-            errors_srom = np.array(errors_srom)
 
             # -----------------------------------------------------------------
             # Compute error estimator
-            uNs = rom.solutions.rom
-            uNs_srom = srom.solutions.rom
+            if estimate_error == True:
 
-            V_srom = srom.basis
+                # Solve SROM
+                srom.solve(mu=mu, step=which)
+                name_srom_solutions = f"solutions_srom_{srom.N}_{which}_{idx_mu}"
+                srom.solutions.to_pickle(name_srom_solutions)
 
-            estimator = np.array([])
-            for nt in range(uNs.shape[1]):
-                uN = uNs[:, nt]
-                uN_scf = uNs_srom[:, nt]
-                error = compute_rom_difference(uN=uN, uN_srom=uN_scf, V_srom=V_srom)
-                estimator = np.append(estimator, [error])
+                uh_srom = srom.solutions.fom
+                errors_srom = _compute_error(uh_srom)
+                errors_srom = np.array(errors_srom)
+
+                # Estimator
+                uNs = rom.solutions.rom
+                uNs_srom = srom.solutions.rom
+
+                V_srom = srom.basis
+
+                estimator = np.array([])
+                for nt in range(uNs.shape[1]):
+                    uN = uNs[:, nt]
+                    uN_scf = uNs_srom[:, nt]
+                    error = compute_rom_difference(uN=uN, uN_srom=uN_scf, V_srom=V_srom)
+                    estimator = np.append(estimator, [error])
+            else:
+                estimator = np.array()
+                errors_srom = np.array()
 
             # -----------------------------------------------------------------
             # Prepare errors payload
@@ -592,7 +609,9 @@ class HyperReducedOrderModelFixed:
 
                 piston = probes["L"].squeeze()
                 piston.name = "piston"
-                name_probes_comparison = f"probes_comparison_rom_{rom.N}_srom_{srom.N}_trilinear_{self.mdeim_trilinear.N}_{which}_{idx_mu}.csv"
+                name_probes_comparison = (
+                    f"probes_comparison_rom_{rom.N}_srom_{srom.N}_{which}_{idx_mu}.csv"
+                )
                 self.save_fom_rom_probes(
                     name=name_probes_comparison,
                     piston=piston,
@@ -610,7 +629,9 @@ class HyperReducedOrderModelFixed:
             output_rom = fom.compute_mass_conservation(
                 mu=mu, ts=timesteps, solutions=rom_sols, which=ProblemType.ROM
             )
-            name_rom = f"mass_conservation_rom_{rom.N}_srom_{srom.N}_mdeim_{self.mdeim_trilinear.N}_{which}_rom_{idx_mu}.csv"
+            name_rom = (
+                f"mass_conservation_rom_{rom.N}_srom_{srom.N}_{which}_rom_{idx_mu}.csv"
+            )
             dump_csv(name_rom, obj=output_rom)
 
             # FOM
