@@ -971,6 +971,16 @@ class RomConstructorNonlinear(RomConstructorMoving):
             Nh = self.fom.assemble_trilinear(mu=mu, t=t, u_n=uh)
             NN = self.to_rom(Nh)
 
+        Nh = self.fom.assemble_trilinear(mu=mu, t=t, u_n=uh)
+        NNa = self.to_rom(Nh)
+
+        # print(NN[0, :3])
+        # print(NNa[0, :3])
+
+        # error = NN - NNa
+        # error = np.abs(error.flatten())
+        # print(np.mean(error))
+
         return NN
 
     def assemble_nonlinear_lifting(self, mu, t):

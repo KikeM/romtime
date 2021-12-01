@@ -1,5 +1,5 @@
 from copy import deepcopy
-from functools import partial
+
 import fenics
 import numpy as np
 from romtime.conventions import (
@@ -145,8 +145,15 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
         """
         Reductor.setup(self=self, rnd=rnd)
 
-        sampler = self.build_sampling_space(num=1)
-        mu = list(sampler)[0]
+        mu = {
+            "a0": 18.195195355423376,
+            "delta": 0.26873208366691226,
+            "loc": 0.37687684484226724,
+            "omega": 26.592103174724752,
+            "scale": 0.37642586057940747,
+            "sigma": 0.19964070947413187,
+            "piston_mach": 0.3927493580385916,
+        }
 
         # Non-constant function to make sure we span all the possibilities
         one = fenics.Expression("x[0]", degree=1)
@@ -371,7 +378,7 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
             mu_idx, mu = self.add_mu(step=Stage.OFFLINE, mu=mu)
 
             # POD in time
-            _basis, sigmas_time, energy_time = self.walk_time(
+            _basis, sigmas_time, energy_time = self.walk_time_reborn(
                 mu=mu,
                 ts=ts,
                 num_t=num_t,
@@ -401,6 +408,70 @@ class MatrixDiscreteEmpiricalInterpolationNonlinear(
         self.report[Stage.OFFLINE]["basis-shape-final"] = basis.shape[1]
 
         return basis, sigmas_mu
+
+    def walk_time_reborn(
+        self,
+        mu,
+        ts,
+        normalize=True,
+        num_t=None,
+        tol_t=None,
+        num_basis=None,
+        tol_basis=None,
+    ):
+        """Walk in the time-branch of the tree walk.
+
+        Parameters
+        ----------
+        mu : dict
+        ts : iterable of floats
+            Time instants to collect.
+        num : int, optional
+            Number of POD basis to keep, by default None
+        tol : float, optional
+            Tolerance for truncate the POD basis, by default None
+
+        Returns
+        -------
+        basis : np.array
+            Resulting basis from the time walk with a freezed parameter.
+        sigmas : np.array
+            Singular value decay.
+        """
+
+        basis_time = []
+        u_n = self.u_n
+        N_psi = u_n.shape[1]
+        desc = f"({self.TYPE}) - RB -  Walk in time"
+        for idx_psi in tqdm(range(N_psi), desc=desc):
+
+            psi = u_n[:, idx_psi]
+
+            # -----------------------------------------------------------------
+            # POD of operator for each basis vector
+            snapshots = [self.assemble_snapshot(mu=mu, t=t, u_n=psi) for t in ts]
+
+            snapshots = np.array(snapshots).T
+            # TODO : Generalize boundary elements for MDEIM
+            snapshots[0, :] = 0.0
+            phi_psi, sigmas, _ = orth(
+                snapshots=snapshots,
+                num=num_t,
+                tol=tol_t,
+                normalize=normalize,
+            )
+
+            basis_time.append(phi_psi)
+
+        basis_time = np.hstack(basis_time)
+        phi, sigmas, energy = orth(
+            snapshots=basis_time,
+            num=num_t,
+            tol=tol_t,
+            normalize=normalize,
+        )
+
+        return phi, sigmas, energy
 
     def walk_time(
         self,

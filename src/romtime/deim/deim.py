@@ -156,7 +156,7 @@ class DiscreteEmpiricalInterpolation(Reductor):
         if keep:
 
             # Allow original base size percentage
-            if keep <= 1.0:
+            if keep < 1.0:
                 N = basis.shape[1]
                 keep = np.floor(N * keep)
                 keep = int(keep)

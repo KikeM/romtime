@@ -353,7 +353,9 @@ class HyperReducedOrderModelFixed:
 
         try:
             mu_space = read_json(StorageNames.MU_SPACE)
+            mu_space[Stage.ONLINE] = list()
         except FileNotFoundError:
+            print("No mu_space detected, creating on empty ...")
             mu_space = {
                 Stage.OFFLINE: list(),
                 Stage.ONLINE: list(),
@@ -400,7 +402,6 @@ class HyperReducedOrderModelFixed:
             # ---------------------------------------------------------------------
             # Connect (M)DEIM with ROM models
             # Include the reduction for the algebraic operators
-
             operators = [
                 OperatorType.LIFTING,
                 OperatorType.MASS,
